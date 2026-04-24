@@ -876,9 +876,40 @@ class PrismaticNativeExtractor(BaseHiddenStateExtractor):
         return self.llm_layers[layer_idx]
 
     def extract_and_predict(self, image, question):
+        """Direct forward pass to capture prefill hidden states.
+
+        PrismaticVLM's generate() (like OpenVLA) hides the prefill inside
+        prepare_inputs_for_generation; hooks only fire at seq_len=1 decode steps.
+        Fix: replicate Prismatic's own preprocessing then call forward() directly
+        with output_hidden_states=True to get the full prefill hidden states.
+        """
         self.hidden_states = {}
+        image_transform = self.vlm.vision_backbone.image_transform
+        tokenizer = self.vlm.llm_backbone.tokenizer
+
+        input_ids = tokenizer(question, truncation=True, return_tensors="pt").input_ids.to(self.vlm.device)
+        pixel_values = image_transform(image)
+        if isinstance(pixel_values, torch.Tensor):
+            pixel_values = pixel_values[None, ...].to(self.vlm.device)
+        elif isinstance(pixel_values, dict):
+            pixel_values = {k: v[None, ...].to(self.vlm.device) for k, v in pixel_values.items()}
+
+        autocast_dtype = self.vlm.llm_backbone.half_precision_dtype
+        with torch.no_grad(), torch.autocast("cuda", dtype=autocast_dtype,
+                                              enabled=self.vlm.enable_mixed_precision_training):
+            out = self.vlm(input_ids=input_ids, pixel_values=pixel_values,
+                           output_hidden_states=True, return_dict=True)
+
+        if hasattr(out, 'hidden_states') and out.hidden_states is not None:
+            for layer_idx in self.target_layers:
+                hs = out.hidden_states[layer_idx + 1]  # +1 to skip embedding layer
+                self.hidden_states[layer_idx] = hs[0, -1, :].detach().cpu().float()
+
+        # Generate answer text via the high-level API for accuracy metrics
+        if not hasattr(type(self.vlm), '_is_stateful'):
+            type(self.vlm)._is_stateful = False
         with torch.no_grad():
-            answer = self.vlm.generate(image, question)
+            answer = self.vlm.generate(image, question, do_sample=False, max_new_tokens=5)
         return self.hidden_states.copy(), answer.strip()
 
 
@@ -895,9 +926,21 @@ class OpenVLAExtractor(BaseHiddenStateExtractor):
     be zero — the value of this extractor lies in the **hidden-state
     comparison** against the base PrismaticVLM checkpoint.
 
-    Loading: AutoModelForCausalLM + trust_remote_code=True (same interface
-    as PrismaticVLM). Requires the same environment as PrismaticExtractor.
+    Note on hook capture: OpenVLA's generate() processes vision+text tokens
+    in a custom prefill step internal to the model, then the HuggingFace
+    generate loop runs with seq_len=1. We override _make_hook to capture at
+    seq_len=1 (first decode step, fully conditioned on image + question).
     """
+
+    def _make_hook(self, layer_idx: int):
+        """Override: capture at seq_len=1 (OpenVLA decode step)."""
+        def hook_fn(module, input, output):
+            hidden = output[0] if isinstance(output, tuple) else output
+            # OpenVLA: capture first decode token (seq_len=1), fully conditioned
+            # on the full image+question context from the custom prefill.
+            if layer_idx not in self.hidden_states:
+                self.hidden_states[layer_idx] = hidden[:, -1, :].detach().cpu().float().squeeze(0)
+        return hook_fn
 
     def _load_model(self):
         # OpenVLA's config.json auto_map uses AutoModelForVision2Seq,
@@ -910,6 +953,7 @@ class OpenVLAExtractor(BaseHiddenStateExtractor):
             self.model_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
+            attn_implementation='eager',
             device_map='auto',
             low_cpu_mem_usage=True,
         ).eval()
@@ -930,24 +974,31 @@ class OpenVLAExtractor(BaseHiddenStateExtractor):
         return self.llm_layers[layer_idx]
 
     def extract_and_predict(self, image, question):
-        """Run one forward pass to capture LLM hidden states.
+        """Direct forward pass to capture LLM hidden states at the prefill.
 
-        OpenVLA generates robot action tokens, not spatial words.
-        We trigger exactly one forward (prefill) pass with max_new_tokens=1
-        so that the hooks capture the last-token hidden state of the input.
-        The returned answer is always 'N/A'.
+        OpenVLA's generate() processes the full prefill internally before the
+        HuggingFace decode loop, so hooks on language_model.model.layers only
+        fire at seq_len=1 (decode token) — not at the prefill. Both questions
+        generate the same action token, giving delta=0 via hooks.
+
+        Fix: use model(**inputs, output_hidden_states=True) to capture the
+        full prefill (seq_len=275: 256 vision + 19 text tokens). hidden[:,-1,:]
+        is the last text token with non-zero delta between swapped questions.
+        Answer is always 'N/A' (OpenVLA outputs action tokens, not text).
         """
         self.hidden_states = {}
-        # OpenVLA processor: processor(text, image)
         inputs = self.processor(question, image, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        # Cast all float tensors to bfloat16 (pixel_values comes in float32)
+        inputs = {k: (v.to(self.model.device).to(torch.bfloat16)
+                      if v.dtype == torch.float32 else v.to(self.model.device))
+                  for k, v in inputs.items()}
         with torch.no_grad():
-            try:
-                self.model.generate(**inputs, max_new_tokens=1, do_sample=False)
-            except Exception as e:
-                logger.warning(f"OpenVLA generate() failed ({e}); falling back to forward().")
-                self.model(**inputs)
-        # OpenVLA outputs action tokens — accuracy metrics will be N/A
+            out = self.model(**inputs, output_hidden_states=True)
+        # out.hidden_states: tuple of (n_layers+1) tensors, index 0 = embedding
+        if hasattr(out, 'hidden_states') and out.hidden_states is not None:
+            for layer_idx in self.target_layers:
+                hs = out.hidden_states[layer_idx + 1]  # +1 to skip embedding layer
+                self.hidden_states[layer_idx] = hs[0, -1, :].detach().cpu().float()
         return self.hidden_states.copy(), "N/A"
 
 
@@ -1262,10 +1313,12 @@ MODEL_REGISTRY["prismatic"] = ModelSpec(
 )
 
 MODEL_REGISTRY["prismatic_hf"] = ModelSpec(
-    # HuggingFace-based loader — use when huggingface_hub >= 0.21 supports '+'.
+    # HuggingFace-based loader.
+    # Note: '+' in repo names is rejected by huggingface_hub client.
+    # Use local path after downloading via hf_hub_download from TRI-ML/prismatic-vlms.
     extractor_class   = PrismaticExtractor,
     checkpoints       = {
-        "7b-dino"  : "TRI-ML/prism-dinosiglip-224px+7b",
+        "7b-dino"  : "models/prismatic_dinosiglip_7b",  # local path after download
         "7b-clip"  : "TRI-ML/prism-clip+7b",
     },
     display_name      = "PrismaticVLM (HF)",
@@ -1303,15 +1356,26 @@ MODEL_REGISTRY["paligemma"] = ModelSpec(
 MODEL_REGISTRY["pi0"] = ModelSpec(
     extractor_class   = Pi0Extractor,
     checkpoints       = {
-        # π0 base policy (PaliGemma fine-tuned on OXE + PI internal data).
         "base"  : "lerobot/pi0_base",
-        # π0.5 (extended training):
-        # "pi05" : "lerobot/pi05_base",
+        "pi05"  : "lerobot/pi05_base",
+        "libero_base"       : "lerobot/pi0_libero_base",
+        "libero_finetuned"  : "lerobot/pi0_libero_finetuned_v044",
     },
     display_name      = "π0",
-    # Processor loaded from base PaliGemma (π0 does not bundle its own processor)
     base_processor_id = "google/paligemma-3b-pt-224",
     plot_color        = "#9467bd",
+)
+
+MODEL_REGISTRY["pi05"] = ModelSpec(
+    extractor_class   = Pi0Extractor,
+    checkpoints       = {
+        "base"              : "lerobot/pi05_base",
+        "libero_base"       : "lerobot/pi05_libero_base",
+        "libero_finetuned"  : "lerobot/pi05_libero_finetuned_v044",
+    },
+    display_name      = "π0.5",
+    base_processor_id = "google/paligemma-3b-pt-224",
+    plot_color        = "#d62728",
 )
 
 # ── Merge configs: VLM vs VLA comparison plots ────────────────────────────────
@@ -1330,6 +1394,12 @@ MERGE_CONFIGS["paligemma_pi0"] = {
     # Before/after VLA fine-tuning: PaliGemma → π0
     "scale_order"   : ["3b-pt", "base"],
     "scale_sources" : {"3b-pt": "paligemma", "base": "pi0"},
+}
+
+MERGE_CONFIGS["paligemma_pi05"] = {
+    # Before/after VLA fine-tuning: PaliGemma → π0.5
+    "scale_order"   : ["3b-pt", "pi05"],
+    "scale_sources" : {"3b-pt": "paligemma", "pi05": "pi0"},
 }
 
 # ── Example merge config ──────────────────────────────────────────────────────
