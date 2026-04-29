@@ -1082,9 +1082,16 @@ class Pi0Extractor(BaseHiddenStateExtractor):
     @staticmethod
     def _patch_transformers_siglip_check():
         """Inject a stub siglip.check module so lerobot pi0 loads with
-        standard (non-openpi-patched) transformers.  The patch is harmless:
-        lerobot uses it only to assert the patched transformers is installed;
-        the actual PaliGemma / Gemma model code works with stock transformers.
+        standard (non-openpi-patched) transformers.  The patch is harmless
+        for lerobot/pi0_base HF-native checkpoints: lerobot uses it only to
+        assert the patched transformers is installed; the actual PaliGemma /
+        Gemma model code works with stock transformers.
+
+        WARNING: this stub must NOT be used with openpi-converted checkpoints
+        (type: pi05 or openpi-converted pi0). Those checkpoints' numerics
+        depend on the transformers_replace patch; with stock transformers the
+        hidden states diverge (see 2026-04-24 parity check, cos=0.16-0.42
+        on mid-layers). Use ~/envs/probing_pi_venv for those.
         """
         import sys
         from types import ModuleType
@@ -1096,18 +1103,64 @@ class Pi0Extractor(BaseHiddenStateExtractor):
             _siglip.check = stub
             sys.modules[mod_name] = stub
 
+    @staticmethod
+    def _detect_openpi_type(model_path: str):
+        """Return 'pi0' / 'pi05' if local config.json has a `type` field
+        written by openpi conversion, else None.
+        """
+        import os, json
+        cfg = os.path.join(model_path, "config.json")
+        if not os.path.isfile(cfg):
+            return None
+        try:
+            with open(cfg) as f:
+                return json.load(f).get("type")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _assert_real_transformers_replace_patch():
+        """Hard-fail if the openpi transformers_replace patch is missing.
+        Required for openpi-converted pi0/pi05 checkpoints — without it,
+        hidden-state activations silently diverge from the inference-time
+        ground truth.
+        """
+        try:
+            from transformers.models.siglip import check as _check
+        except ImportError:
+            raise RuntimeError(
+                "openpi transformers_replace patch not installed. "
+                "For openpi-converted pi0/pi05 checkpoints, use "
+                "~/envs/probing_pi_venv (python3.10 + lerobot + "
+                "transformers==4.53.2 + openpi transformers_replace). "
+                "Falling back to the stub would silently corrupt activations."
+            )
+        if not _check.check_whether_transformers_replace_is_installed_correctly():
+            import transformers
+            raise RuntimeError(
+                f"transformers=={transformers.__version__} is not the "
+                f"patched 4.53.2. Use ~/envs/probing_pi_venv for openpi-"
+                f"converted checkpoints."
+            )
+
     def _load_model(self):
-        # lerobot pi0 asserts a custom-patched transformers (openpi fork).
-        # Inject a stub so stock transformers passes the check.
-        self._patch_transformers_siglip_check()
+        openpi_type = self._detect_openpi_type(self.model_path)
+
+        if openpi_type in ("pi0", "pi05"):
+            # openpi-converted checkpoint — real patch required.
+            self._assert_real_transformers_replace_patch()
+        else:
+            # Legacy HF lerobot/pi0_base path — stub patch is safe.
+            self._patch_transformers_siglip_check()
 
         try:
-            # lerobot >= 0.4: lerobot.policies.*
-            # lerobot <  0.4: lerobot.common.policies.*
-            try:
-                from lerobot.policies.pi0.modeling_pi0 import PI0Policy
-            except ImportError:
-                from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
+            if openpi_type == "pi05":
+                from lerobot.policies.pi05.modeling_pi05 import PI05Policy as PolicyCls
+            else:
+                try:
+                    from lerobot.policies.pi0.modeling_pi0 import PI0Policy as PolicyCls
+                except ImportError:
+                    from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy as PolicyCls
         except ImportError:
             raise ImportError(
                 "lerobot package not found. Install with:\n"
@@ -1115,8 +1168,12 @@ class Pi0Extractor(BaseHiddenStateExtractor):
                 "See: https://github.com/huggingface/lerobot"
             )
 
-        logger.info(f"Loading π0 policy from {self.model_path} via lerobot …")
-        policy = PI0Policy.from_pretrained(self.model_path)
+        logger.info(f"Loading π policy from {self.model_path} (openpi_type={openpi_type}) via lerobot …")
+        # openpi-converted ckpts carry action-expert layernorm key drift
+        # between lerobot versions (not affecting paligemma backbone).
+        # strict=False is safe for probing because we only touch paligemma.
+        policy = PolicyCls.from_pretrained(self.model_path, strict=False) \
+            if openpi_type else PolicyCls.from_pretrained(self.model_path)
         policy.eval()
 
         paligemma, tokenizer = self._extract_paligemma(policy)
@@ -1240,6 +1297,45 @@ class Pi0Extractor(BaseHiddenStateExtractor):
         return self.hidden_states.copy(), answer
 
 
+# ── π0 FAST (lerobot/pi0fast-base) ───────────────────────────────────────────
+
+class Pi0FastExtractor(Pi0Extractor):
+    """π0 FAST — same PaliGemma-3B backbone, loads via PI0FastPolicy."""
+
+    def _load_model(self):
+        self._patch_transformers_siglip_check()
+        try:
+            from lerobot.policies.pi0_fast.modeling_pi0_fast import PI0FastPolicy
+        except ImportError:
+            raise ImportError("lerobot pi0_fast not found. pip install lerobot")
+
+        logger.info(f"Loading π0-FAST policy from {self.model_path} via lerobot …")
+        policy = PI0FastPolicy.from_pretrained(self.model_path)
+        policy.eval()
+
+        paligemma, tokenizer = self._extract_paligemma(policy)
+        self.model = paligemma.to(torch.bfloat16).to('cuda').eval()
+        self.tokenizer = tokenizer
+
+        pg_inner = getattr(self.model, 'model', None)
+        if pg_inner is not None and hasattr(pg_inner, 'text_config_dtype'):
+            pg_inner.text_config_dtype = next(self.model.parameters()).dtype
+
+        from transformers import AutoProcessor
+        self.processor = AutoProcessor.from_pretrained(
+            self.base_processor_id or "google/paligemma-3b-pt-224"
+        )
+        self.llm_layers = _find_llm_layers(self.model, [
+            ['language_model', 'layers'],
+            ['language_model', 'model', 'layers'],
+            ['model', 'language_model', 'layers'],
+            ['model', 'language_model', 'model', 'layers'],
+        ], hint='Pi0Fast-PaliGemma')
+        if self.llm_layers is None:
+            raise ValueError("Could not find transformer layers in π0-FAST backbone.")
+        logger.info(f"π0-FAST PaliGemma backbone: {len(self.llm_layers)} transformer layers.")
+
+
 # ============================================================================
 # MODEL_REGISTRY — built-in entries
 # ============================================================================
@@ -1345,12 +1441,23 @@ MODEL_REGISTRY["openvla"] = ModelSpec(
 MODEL_REGISTRY["paligemma"] = ModelSpec(
     extractor_class   = PaliGemmaExtractor,
     checkpoints       = {
-        # Pretrained PaliGemma 3B — the base VLM used in π0.
-        "3b-pt" : "google/paligemma-3b-pt-224",
+        "3b-pt"  : "google/paligemma-3b-pt-224",
+        "3b-mix" : "google/paligemma-3b-mix-224",   # VQA-finetuned; fixes pt prompt-format confound
     },
     display_name      = "PaliGemma",
     base_processor_id = "google/paligemma-3b-pt-224",
     plot_color        = "#1f77b4",
+)
+
+MODEL_REGISTRY["pi0fast"] = ModelSpec(
+    extractor_class   = Pi0FastExtractor,
+    checkpoints       = {
+        "base"            : "lerobot/pi0fast-base",
+        "libero_finetuned": "lerobot/pi0fast-libero-v044",
+    },
+    display_name      = "π0-FAST",
+    base_processor_id = "google/paligemma-3b-pt-224",
+    plot_color        = "#8c564b",
 )
 
 MODEL_REGISTRY["pi0"] = ModelSpec(
@@ -1360,6 +1467,8 @@ MODEL_REGISTRY["pi0"] = ModelSpec(
         "pi05"  : "lerobot/pi05_base",
         "libero_base"       : "lerobot/pi0_libero_base",
         "libero_finetuned"  : "lerobot/pi0_libero_finetuned_v044",
+        # openpi-converted GCS Orbax (for N=4 join, requires ~/envs/probing_pi_venv):
+        "libero_gcs"        : "/home/v-cheomin/models/pi0_libero_pytorch",
     },
     display_name      = "π0",
     base_processor_id = "google/paligemma-3b-pt-224",
@@ -1372,6 +1481,8 @@ MODEL_REGISTRY["pi05"] = ModelSpec(
         "base"              : "lerobot/pi05_base",
         "libero_base"       : "lerobot/pi05_libero_base",
         "libero_finetuned"  : "lerobot/pi05_libero_finetuned_v044",
+        # openpi-converted GCS Orbax (for N=4 join, requires ~/envs/probing_pi_venv):
+        "libero_gcs"        : "/home/v-cheomin/models/pi05_libero_pytorch",
     },
     display_name      = "π0.5",
     base_processor_id = "google/paligemma-3b-pt-224",
