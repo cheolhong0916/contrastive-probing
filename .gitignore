@@ -1,1 +1,9 @@
-# probing_extended.py
+# Whitelist: ignore everything by default, then allow only release files.
+*
+
+# Allow this gitignore itself
+!.gitignore
+
+# Allow the published code + docs
+!README.md
+!probing.py

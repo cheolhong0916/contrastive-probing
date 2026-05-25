@@ -22,67 +22,19 @@ Analyses produced
   5. PCA visualisations    : 2-D and 3-D PCA of embeddings / delta vectors
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HOW TO ADD A NEW MODEL  (two steps)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-STEP 1 — Implement an extractor class
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Inherit from BaseHiddenStateExtractor and implement four methods:
-
-    class MyModelExtractor(BaseHiddenStateExtractor):
-        def _load_model(self):
-            # Load self.model and self.processor (or equivalent)
-            ...
-
-        def _get_num_layers(self) -> int:
-            # Return the number of transformer layers
-            return len(self.model.language_model.model.layers)
-
-        def _get_layer_module(self, layer_idx: int):
-            # Return the nn.Module for layer layer_idx
-            return self.model.language_model.model.layers[layer_idx]
-
-        def extract_and_predict(self, image: Image.Image, question: str):
-            # Run inference; hidden states are captured automatically via hooks.
-            # Return (self.hidden_states.copy(), answer_string)
-            self.hidden_states = {}
-            ...
-            return self.hidden_states.copy(), answer
-
-The framework registers a forward hook on every target layer automatically;
-you do *not* need to handle hook registration yourself.
-
-STEP 2 — Register the model
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Add an entry to MODEL_REGISTRY (search for "MODEL_REGISTRY = {" below):
-
-    MODEL_REGISTRY["my_model"] = ModelSpec(
-        extractor_class = MyModelExtractor,
-        checkpoints = {
-            "base"       : "org/model-name-on-huggingface",
-            "finetuned"  : "/local/path/to/checkpoint",
-        },
-        display_name = "My Model",          # used in plot titles
-        plot_color   = "#17becf",           # optional hex colour for plots
-    )
-
-Then run:
-    python probing.py --model_type my_model --scales base
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 USAGE EXAMPLES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # Run a single registered model
   python probing.py --model_type qwen25 --scales 3b
 
   # Run all checkpoints for a model family
-  python probing.py --model_type prismatic
+  python probing.py --model_type qwen25
 
   # Generate cross-scale comparison plots (after inference)
   python probing.py --model_type qwen25 --merge
 
-  # Combine two families into one comparison plot
-  python probing.py --model_type qwen_all --merge
+To add a new model, see the @register_model decorator and the MODEL_REGISTRY
+section below.
 """
 
 import os
@@ -187,12 +139,6 @@ CANONICAL_CATEGORIES = {
     'horizontal': 'left',
     'vertical':   'above',
     'distance':   'far',
-}
-
-SYNONYMS = {
-    'below': ['under', 'beneath'],
-    'close': ['near', 'nearby'],
-    'far':   ['distant'],
 }
 
 # ── Question templates ────────────────────────────────────────────────────────
@@ -435,7 +381,7 @@ class BaseHiddenStateExtractor(ABC):
 # Use @register_model to both define and register the extractor in one step,
 # or register manually via MODEL_REGISTRY["name"] = ModelSpec(...) after the class.
 
-# ── Helper shared by Molmo2 / Qwen3 / Prismatic ───────────────────────────────
+# ── Helper shared by Molmo2 / Qwen3 ─────────────────────────────────────────────────
 
 def _find_llm_layers(model, candidate_paths: List[List[str]], hint: str = ''):
     """Try a list of attribute paths in order; return the first valid layers list."""
@@ -706,448 +652,6 @@ class NVILAExtractor(BaseHiddenStateExtractor):
         return self.hidden_states.copy(), answer
 
 
-# ── PrismaticVLM (TRI-ML) ─────────────────────────────────────────────────────
-
-class PrismaticExtractor(BaseHiddenStateExtractor):
-    """Extractor for TRI-ML PrismaticVLM family.
-
-    Supports models hosted on HuggingFace under the TRI-ML organisation:
-      - TRI-ML/prism-dinosiglip-224px+7b
-      - TRI-ML/prism-dinosiglip-336px+7b
-      - TRI-ML/prism-clip+7b
-      (and any fine-tuned checkpoints following the same architecture)
-
-    The extractor uses the standard HuggingFace AutoModelForVision2Seq interface
-    with trust_remote_code=True, which is how PrismaticVLM is packaged on the Hub.
-    Hidden states are captured from the LLM backbone's transformer layers.
-    """
-
-    def _load_model(self):
-        from transformers import AutoProcessor, AutoModelForVision2Seq
-        proc_id = self.base_processor_id or self.model_path
-        self.processor = AutoProcessor.from_pretrained(proc_id, trust_remote_code=True)
-        self.model = AutoModelForVision2Seq.from_pretrained(
-            self.model_path,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            device_map='auto',
-        ).eval()
-        self.llm_layers = _find_llm_layers(self.model, [
-            # Common Prismatic path (Llama-based LLM backbone)
-            ['llm_backbone', 'model', 'layers'],
-            ['language_model', 'model', 'layers'],
-            ['model', 'language_model', 'model', 'layers'],
-            ['model', 'layers'],
-        ], hint='PrismaticVLM')
-        if self.llm_layers is None:
-            raise ValueError(
-                "Could not find transformer layers in PrismaticVLM model. "
-                "Please check the model architecture and update PrismaticExtractor."
-            )
-        logger.info(f"Loaded PrismaticVLM from {self.model_path}")
-
-    def _get_num_layers(self) -> int:
-        return len(self.llm_layers)
-
-    def _get_layer_module(self, layer_idx: int):
-        return self.llm_layers[layer_idx]
-
-    def extract_and_predict(self, image, question):
-        self.hidden_states = {}
-        # Build a single-turn conversation.
-        # PrismaticVLM processors expose apply_chat_template when loaded via HF.
-        if hasattr(self.processor, 'apply_chat_template'):
-            messages = [{"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text", "text": question},
-            ]}]
-            prompt = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            inputs = self.processor(images=[image], text=prompt, return_tensors="pt")
-        else:
-            # Fallback: plain text prompt (some older checkpoints)
-            inputs = self.processor(images=[image], text=question, return_tensors="pt")
-
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            output_ids = self.model.generate(**inputs, max_new_tokens=20, do_sample=False)
-        input_len = inputs['input_ids'].shape[1]
-        answer = self.processor.tokenizer.decode(
-            output_ids[0, input_len:], skip_special_tokens=True
-        ).strip()
-        return self.hidden_states.copy(), answer
-
-
-# ── PrismaticVLM — native loader (prismatic package) ─────────────────────────
-
-class PrismaticNativeExtractor(BaseHiddenStateExtractor):
-    """Extractor for TRI-ML PrismaticVLM using the native *prismatic* package.
-
-    Preferred over PrismaticExtractor when running in the *prismatic-vlms*
-    conda environment because it avoids the huggingface_hub validation error
-    caused by the '+' character in model repo IDs (e.g.
-    'prism-dinosiglip-224px+7b').
-
-    The model_path / checkpoint key should be the prismatic model ID string,
-    not a HuggingFace URL, e.g.: "prism-dinosiglip-224px+7b".
-
-    Requires:  conda env prismatic-vlms  (or pip install prismatic-vlms)
-
-    Hidden states are captured from the Llama-2 language backbone at
-      model.llm_backbone.llm.model.layers
-    """
-
-    def _load_model(self):
-        try:
-            import prismatic as _prismatic
-        except ImportError:
-            raise ImportError(
-                "prismatic package not found. "
-                "Run inside the 'prismatic-vlms' conda environment, or:\n"
-                "  pip install prismatic-vlms"
-            )
-        model_id = self.model_path   # e.g. "prism-dinosiglip-224px+7b"
-        logger.info(f"Loading PrismaticVLM '{model_id}' via native prismatic package…")
-        self.vlm = _prismatic.load(model_id)
-        self.vlm.to(self.device).eval()
-
-        # Expose the language model layers for hook registration.
-        # LLaMa2LLMBackbone stores the HF LlamaForCausalLM at .llm
-        llm_backbone = self.vlm.llm_backbone
-        self.llm_layers = _find_llm_layers(llm_backbone, [
-            ['llm', 'model', 'layers'],
-            ['model', 'layers'],
-        ], hint='PrismaticNative')
-        if self.llm_layers is None:
-            raise ValueError(
-                "Could not find transformer layers in native PrismaticVLM. "
-                "Check the llm_backbone attribute path."
-            )
-        logger.info(f"PrismaticVLM '{model_id}': {len(self.llm_layers)} layers.")
-
-        # Expose .model for the cleanup helper (expects model attribute)
-        self.model = self.vlm
-
-    def _get_num_layers(self) -> int:
-        return len(self.llm_layers)
-
-    def _get_layer_module(self, layer_idx: int):
-        return self.llm_layers[layer_idx]
-
-    def extract_and_predict(self, image, question):
-        self.hidden_states = {}
-        with torch.no_grad():
-            answer = self.vlm.generate(image, question)
-        return self.hidden_states.copy(), answer.strip()
-
-
-# ── OpenVLA (openvla/openvla-7b) ──────────────────────────────────────────────
-
-class OpenVLAExtractor(BaseHiddenStateExtractor):
-    """Extractor for OpenVLA (openvla/openvla-7b).
-
-    OpenVLA is fine-tuned from PrismaticVLM (DINOv2 + SigLIP + Llama 2 7B)
-    on 970k Open X-Embodiment robot demonstration episodes.
-
-    The model predicts continuous robot actions (not text), so the answer
-    returned by extract_and_predict is always "N/A". Accuracy metrics will
-    be zero — the value of this extractor lies in the **hidden-state
-    comparison** against the base PrismaticVLM checkpoint.
-
-    Loading: AutoModelForCausalLM + trust_remote_code=True (same interface
-    as PrismaticVLM). Requires the same environment as PrismaticExtractor.
-    """
-
-    def _load_model(self):
-        # OpenVLA's config.json auto_map uses AutoModelForVision2Seq,
-        # not AutoModelForCausalLM.
-        from transformers import AutoModelForVision2Seq, AutoProcessor
-        self.processor = AutoProcessor.from_pretrained(
-            self.model_path, trust_remote_code=True,
-        )
-        self.model = AutoModelForVision2Seq.from_pretrained(
-            self.model_path,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            device_map='auto',
-            low_cpu_mem_usage=True,
-        ).eval()
-        self.llm_layers = _find_llm_layers(self.model, [
-            ['language_model', 'model', 'layers'],
-            ['llm_backbone', 'llm', 'model', 'layers'],
-            ['model', 'language_model', 'model', 'layers'],
-            ['model', 'layers'],
-        ], hint='OpenVLA')
-        if self.llm_layers is None:
-            raise ValueError("Could not find transformer layers in OpenVLA model.")
-        logger.info(f"Loaded OpenVLA from {self.model_path}")
-
-    def _get_num_layers(self) -> int:
-        return len(self.llm_layers)
-
-    def _get_layer_module(self, layer_idx: int):
-        return self.llm_layers[layer_idx]
-
-    def extract_and_predict(self, image, question):
-        """Run one forward pass to capture LLM hidden states.
-
-        OpenVLA generates robot action tokens, not spatial words.
-        We trigger exactly one forward (prefill) pass with max_new_tokens=1
-        so that the hooks capture the last-token hidden state of the input.
-        The returned answer is always 'N/A'.
-        """
-        self.hidden_states = {}
-        # OpenVLA processor: processor(text, image)
-        inputs = self.processor(question, image, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            try:
-                self.model.generate(**inputs, max_new_tokens=1, do_sample=False)
-            except Exception as e:
-                logger.warning(f"OpenVLA generate() failed ({e}); falling back to forward().")
-                self.model(**inputs)
-        # OpenVLA outputs action tokens — accuracy metrics will be N/A
-        return self.hidden_states.copy(), "N/A"
-
-
-# ── PaliGemma (google/paligemma-3b-pt-224) ───────────────────────────────────
-
-class PaliGemmaExtractor(BaseHiddenStateExtractor):
-    """Extractor for Google PaliGemma (SigLIP + Gemma 2B, 3B total).
-
-    Works with any PaliGemma checkpoint:
-      - google/paligemma-3b-pt-224   (pretrained)
-      - google/paligemma-3b-mix-224  (fine-tuned on VQA mix)
-
-    The language-model backbone is Gemma 2B; hidden states are extracted
-    from its transformer layers (model.language_model.model.layers).
-    """
-
-    def _load_model(self):
-        from transformers import PaliGemmaForConditionalGeneration, AutoProcessor
-        proc_id = self.base_processor_id or self.model_path
-        self.processor = AutoProcessor.from_pretrained(proc_id)
-        self.model = PaliGemmaForConditionalGeneration.from_pretrained(
-            self.model_path,
-            torch_dtype=torch.bfloat16,
-            device_map='auto',
-        ).eval()
-        self.llm_layers = _find_llm_layers(self.model, [
-            ['language_model', 'layers'],           # transformers 4.57: .language_model = GemmaModel
-            ['language_model', 'model', 'layers'],  # older: .language_model = GemmaForCausalLM
-            ['model', 'language_model', 'layers'],
-            ['model', 'language_model', 'model', 'layers'],
-        ], hint='PaliGemma')
-        if self.llm_layers is None:
-            raise ValueError("Could not find transformer layers in PaliGemma model.")
-        logger.info(f"Loaded PaliGemma from {self.model_path}")
-
-    def _get_num_layers(self) -> int:
-        return len(self.llm_layers)
-
-    def _get_layer_module(self, layer_idx: int):
-        return self.llm_layers[layer_idx]
-
-    def extract_and_predict(self, image, question):
-        self.hidden_states = {}
-        inputs = self.processor(images=image, text=question, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            output_ids = self.model.generate(**inputs, max_new_tokens=20, do_sample=False)
-        input_len = inputs['input_ids'].shape[1]
-        answer = self.processor.tokenizer.decode(
-            output_ids[0, input_len:], skip_special_tokens=True
-        ).strip()
-        return self.hidden_states.copy(), answer
-
-
-# ── π0 / Pi0 (lerobot/pi0_base) ──────────────────────────────────────────────
-
-class Pi0Extractor(BaseHiddenStateExtractor):
-    """Extractor for π0 (Physical Intelligence) loaded via LeRobot.
-
-    π0 fine-tunes PaliGemma (3B) together with a flow-matching action expert
-    on a mix of Open X-Embodiment data and in-house robot trajectories.
-    This extractor isolates the **PaliGemma backbone** from the π0 checkpoint
-    and probes its spatial representations via standard VQA inference.
-
-    Requires:  pip install lerobot
-
-    Checkpoints
-    -----------
-    lerobot/pi0_base  : base π0 policy
-    lerobot/pi05_base : π0.5 (extended training)
-
-    Notes
-    -----
-    - If the PaliGemma backbone was frozen during VLA training the hidden
-      states will match the base PaliGemma.  Use a full-finetune checkpoint
-      (e.g. pi0_base without train_expert_only) for a meaningful comparison.
-    - The image processor is loaded from the base PaliGemma checkpoint
-      (set via base_processor_id, default: google/paligemma-3b-pt-224).
-    """
-
-    @staticmethod
-    def _patch_transformers_siglip_check():
-        """Inject a stub siglip.check module so lerobot pi0 loads with
-        standard (non-openpi-patched) transformers.  The patch is harmless:
-        lerobot uses it only to assert the patched transformers is installed;
-        the actual PaliGemma / Gemma model code works with stock transformers.
-        """
-        import sys
-        from types import ModuleType
-        mod_name = 'transformers.models.siglip.check'
-        if mod_name not in sys.modules:
-            stub = ModuleType(mod_name)
-            stub.check_whether_transformers_replace_is_installed_correctly = lambda: True
-            import transformers.models.siglip as _siglip
-            _siglip.check = stub
-            sys.modules[mod_name] = stub
-
-    def _load_model(self):
-        # lerobot pi0 asserts a custom-patched transformers (openpi fork).
-        # Inject a stub so stock transformers passes the check.
-        self._patch_transformers_siglip_check()
-
-        try:
-            # lerobot >= 0.4: lerobot.policies.*
-            # lerobot <  0.4: lerobot.common.policies.*
-            try:
-                from lerobot.policies.pi0.modeling_pi0 import PI0Policy
-            except ImportError:
-                from lerobot.common.policies.pi0.modeling_pi0 import PI0Policy
-        except ImportError:
-            raise ImportError(
-                "lerobot package not found. Install with:\n"
-                "  pip install lerobot\n"
-                "See: https://github.com/huggingface/lerobot"
-            )
-
-        logger.info(f"Loading π0 policy from {self.model_path} via lerobot …")
-        policy = PI0Policy.from_pretrained(self.model_path)
-        policy.eval()
-
-        paligemma, tokenizer = self._extract_paligemma(policy)
-        self.model = paligemma.to(torch.bfloat16).to('cuda').eval()
-        self.tokenizer = tokenizer
-
-        # transformers may cache torch_dtype as a string at __init__ time
-        # (e.g. PaliGemmaModel.text_config_dtype = config.get_text_config().dtype
-        # returns 'float32'). torch.finfo() requires an actual torch.dtype.
-        # Patch the live attribute on PaliGemmaModel directly.
-        pg_inner = getattr(self.model, 'model', None)  # PaliGemmaModel inside PaliGemmaForConditionalGeneration
-        if pg_inner is not None and hasattr(pg_inner, 'text_config_dtype'):
-            # Must match actual weight dtype (bfloat16), not the config string.
-            pg_inner.text_config_dtype = next(self.model.parameters()).dtype
-
-        # Image processor from base PaliGemma
-        from transformers import AutoProcessor
-        proc_id = self.base_processor_id or "google/paligemma-3b-pt-224"
-        self.processor = AutoProcessor.from_pretrained(proc_id)
-
-        self.llm_layers = _find_llm_layers(self.model, [
-            # transformers 4.57: PaliGemmaForConditionalGeneration.language_model
-            # is a property returning PaliGemmaModel.language_model (GemmaModel),
-            # which has .layers directly (not .model.layers).
-            ['language_model', 'layers'],
-            ['language_model', 'model', 'layers'],
-            ['model', 'language_model', 'layers'],
-            ['model', 'language_model', 'model', 'layers'],
-        ], hint='Pi0-PaliGemma')
-        if self.llm_layers is None:
-            raise ValueError(
-                "Could not find transformer layers in π0's PaliGemma backbone. "
-                "Check the lerobot version and model structure."
-            )
-        logger.info(f"π0 PaliGemma backbone: {len(self.llm_layers)} transformer layers.")
-
-    def _extract_paligemma(self, policy):
-        """Walk π0 policy attributes to find the PaliGemma backbone."""
-        pi0 = policy.model  # PI0 nn.Module
-
-        # ── Try known attribute paths (lerobot versions vary) ─────────────────
-        pg_paths = [
-            ['paligemma_with_expert', 'paligemma'],
-            ['paligemma'],
-            ['vlm'],
-        ]
-        paligemma = None
-        for path in pg_paths:
-            obj = pi0
-            for attr in path:
-                obj = getattr(obj, attr, None)
-                if obj is None:
-                    break
-            if obj is not None and hasattr(obj, 'language_model'):
-                paligemma = obj
-                logger.info(f"Pi0: PaliGemma found at model.{'.'.join(path)}")
-                break
-
-        if paligemma is None:
-            # Fallback: scan all named modules for a PaliGemma class
-            for name, module in pi0.named_modules():
-                cls_name = type(module).__name__
-                if cls_name in ('PaliGemmaForConditionalGeneration',
-                                'PaliGemmaModel'):
-                    paligemma = module
-                    logger.info(f"Pi0: PaliGemma found via scan at '{name}'")
-                    break
-
-        if paligemma is None:
-            raise ValueError(
-                "Could not find PaliGemma backbone in π0 model. "
-                "Attribute paths tried: " + str(pg_paths)
-            )
-
-        # ── Tokenizer ─────────────────────────────────────────────────────────
-        tokenizer = None
-        for path in [['paligemma_with_expert', 'tokenizer'], ['tokenizer']]:
-            obj = pi0
-            for attr in path:
-                obj = getattr(obj, attr, None)
-                if obj is None:
-                    break
-            if obj is not None and hasattr(obj, 'decode'):
-                tokenizer = obj
-                break
-
-        if tokenizer is None:
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(
-                self.base_processor_id or "google/paligemma-3b-pt-224"
-            )
-
-        return paligemma, tokenizer
-
-    def _get_num_layers(self) -> int:
-        return len(self.llm_layers)
-
-    def _get_layer_module(self, layer_idx: int):
-        return self.llm_layers[layer_idx]
-
-    def extract_and_predict(self, image, question):
-        self.hidden_states = {}
-        inputs = self.processor(images=image, text=question, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            try:
-                output_ids = self.model.generate(**inputs, max_new_tokens=20, do_sample=False)
-                input_len = inputs['input_ids'].shape[1]
-                answer = self.tokenizer.decode(
-                    output_ids[0, input_len:], skip_special_tokens=True
-                ).strip()
-            except Exception as e:
-                logger.warning(
-                    f"Pi0 generate() failed ({e}); doing forward-only pass for hidden states."
-                )
-                try:
-                    self.model(**inputs)
-                except Exception as e2:
-                    logger.warning(f"Pi0 forward() also failed ({e2}); no hidden states for this sample.")
-                answer = "N/A"
-        return self.hidden_states.copy(), answer
-
 
 # ============================================================================
 # MODEL_REGISTRY — built-in entries
@@ -1199,98 +703,15 @@ MODEL_REGISTRY["molmo2"] = ModelSpec(
 MODEL_REGISTRY["nvila"] = ModelSpec(
     extractor_class = NVILAExtractor,
     checkpoints     = {
-        "2b" : "Efficient-Large-Model/NVILA-Lite-2B",
-        # Add fine-tuned checkpoints here.
+        "2b"          : "Efficient-Large-Model/NVILA-Lite-2B",
+        # Comparison checkpoints for R1_m2 (balanced ST FT vs base vs general 80k mix).
+        "vanilla"     : "Efficient-Large-Model/NVILA-Lite-2B",
+        "80k"         : "/home/v-cheomin/experiments/contrastive-probing/models/nvila_80k_general",
+        "balanced-st" : "/home/v-cheomin/mnt/blob_caching/results/r1m2_st_balanced/NVILA-Lite-2B-SPATIAL_TUNNEL_BALANCED_80K-v1",
     },
     display_name = "NVILA-Lite",
     plot_color   = "#2ca02c",
 )
-
-MODEL_REGISTRY["prismatic"] = ModelSpec(
-    # Uses the native prismatic package (prismatic-vlms env).
-    # model_path = native model ID string, NOT a HuggingFace repo URL.
-    # The '+' in model IDs like 'prism-dinosiglip-224px+7b' is not handled
-    # by older huggingface_hub; the native loader sidesteps this entirely.
-    extractor_class = PrismaticNativeExtractor,
-    checkpoints     = {
-        # Base VLM — same checkpoint OpenVLA was fine-tuned from.
-        "7b-dino"  : "prism-dinosiglip-224px+7b",
-        "7b-clip"  : "prism-clip+7b",
-    },
-    display_name = "PrismaticVLM",
-    plot_color   = "#e377c2",
-)
-
-MODEL_REGISTRY["prismatic_hf"] = ModelSpec(
-    # HuggingFace-based loader — use when huggingface_hub >= 0.21 supports '+'.
-    extractor_class   = PrismaticExtractor,
-    checkpoints       = {
-        "7b-dino"  : "TRI-ML/prism-dinosiglip-224px+7b",
-        "7b-clip"  : "TRI-ML/prism-clip+7b",
-    },
-    display_name      = "PrismaticVLM (HF)",
-    plot_color        = "#e377c2",
-)
-
-# ── VLM → VLA comparison: Prismatic → OpenVLA ─────────────────────────────────
-
-MODEL_REGISTRY["openvla"] = ModelSpec(
-    extractor_class = OpenVLAExtractor,
-    checkpoints     = {
-        # OpenVLA is fine-tuned from prismatic/7b-dino on 970k OXE episodes.
-        # Run alongside prismatic/7b-dino then use the merge config below to compare.
-        "7b"  : "openvla/openvla-7b",
-        # OpenVLA-OFT (parameter-efficient fine-tuned variant):
-        # "7b-oft" : "openvla/openvla-oft-droid-7b",
-    },
-    display_name = "OpenVLA",
-    plot_color   = "#d62728",
-)
-
-# ── VLM → VLA comparison: PaliGemma → π0 ─────────────────────────────────────
-
-MODEL_REGISTRY["paligemma"] = ModelSpec(
-    extractor_class   = PaliGemmaExtractor,
-    checkpoints       = {
-        # Pretrained PaliGemma 3B — the base VLM used in π0.
-        "3b-pt" : "google/paligemma-3b-pt-224",
-    },
-    display_name      = "PaliGemma",
-    base_processor_id = "google/paligemma-3b-pt-224",
-    plot_color        = "#1f77b4",
-)
-
-MODEL_REGISTRY["pi0"] = ModelSpec(
-    extractor_class   = Pi0Extractor,
-    checkpoints       = {
-        # π0 base policy (PaliGemma fine-tuned on OXE + PI internal data).
-        "base"  : "lerobot/pi0_base",
-        # π0.5 (extended training):
-        # "pi05" : "lerobot/pi05_base",
-    },
-    display_name      = "π0",
-    # Processor loaded from base PaliGemma (π0 does not bundle its own processor)
-    base_processor_id = "google/paligemma-3b-pt-224",
-    plot_color        = "#9467bd",
-)
-
-# ── Merge configs: VLM vs VLA comparison plots ────────────────────────────────
-#
-# After running inference for each model separately, generate comparison plots with:
-#   python probing.py --model_type prismatic_openvla --merge
-#   python probing.py --model_type paligemma_pi0 --merge
-
-MERGE_CONFIGS["prismatic_openvla"] = {
-    # Before/after VLA fine-tuning: PrismaticVLM → OpenVLA
-    "scale_order"   : ["7b-dino", "7b"],
-    "scale_sources" : {"7b-dino": "prismatic", "7b": "openvla"},
-}
-
-MERGE_CONFIGS["paligemma_pi0"] = {
-    # Before/after VLA fine-tuning: PaliGemma → π0
-    "scale_order"   : ["3b-pt", "base"],
-    "scale_sources" : {"3b-pt": "paligemma", "base": "pi0"},
-}
 
 # ── Example merge config ──────────────────────────────────────────────────────
 # Uncomment and customise to compare Qwen2.5 and Qwen3 side by side:
@@ -1371,49 +792,16 @@ def decode_base64_image(base64_str: str) -> Image.Image:
     return Image.open(BytesIO(base64.b64decode(base64_str))).convert('RGB')
 
 
-# ── Answer matching ───────────────────────────────────────────────────────────
-
-def check_answer(generated_text: str, expected_category: str) -> bool:
-    if not generated_text or not generated_text.strip():
-        return False
-    text     = generated_text.strip().lower()
-    expected = expected_category.lower()
-    opposite = OPPOSITE_MAP[expected]
-
-    def earliest(word):
-        positions = []
-        pos = text.find(word)
-        if pos != -1:
-            positions.append(pos)
-        for syn in SYNONYMS.get(word, []):
-            pos = text.find(syn)
-            if pos != -1:
-                positions.append(pos)
-        return min(positions) if positions else -1
-
-    pos_exp = earliest(expected)
-    pos_opp = earliest(opposite)
-    if pos_exp == -1:
-        return False
-    if pos_opp == -1:
-        return True
-    return pos_exp < pos_opp
-
-
 # ── Swap pair creation ────────────────────────────────────────────────────────
 
 def load_swap_pairs(
     tsv_path: str,
     seed: int = 42,
-    filter_unknown: bool = True,
 ) -> List[dict]:
-    """Load EmbSpatialBench TSV and create minimal contrastive swap pairs.
+    """Load EmbSpatial-Bench TSV and create minimal contrastive swap pairs.
 
-    Parameters
-    ----------
-    filter_unknown
-        If True (default), skip distance pairs whose target object is unknown/empty
-        and drop unknown candidates from the reference object pool.
+    For far/close (distance) pairs, samples with unknown/empty target or
+    reference objects are filtered out.
     """
     rng = random.Random(seed)
     df  = pd.read_csv(tsv_path, sep='\t')
@@ -1452,12 +840,11 @@ def load_swap_pairs(
                 target_object  = options[answer_key]
                 candidates     = [v for k, v in options.items() if k != answer_key]
 
-                if filter_unknown:
-                    if not _valid_obj(target_object):
-                        continue
-                    candidates = [v for v in candidates if _valid_obj(v)]
-                    if not candidates:
-                        continue
+                if not _valid_obj(target_object):
+                    continue
+                candidates = [v for v in candidates if _valid_obj(v)]
+                if not candidates:
+                    continue
 
                 reference_object = rng.choice(candidates)
                 tmpl = SHORT_TEMPLATES['distance']
@@ -1528,9 +915,6 @@ def extract_swap_features(
             hs_o, p_o  = _run_query(extractor, image, pair['original_question'])
             hs_s, p_s  = _run_query(extractor, image, pair['swapped_question'])
 
-            correct_o  = check_answer(p_o, pair['original_answer'])
-            correct_s  = check_answer(p_s, pair['swapped_answer'])
-
             delta = {
                 l: hs_s[l] - hs_o[l]
                 for l in extractor.target_layers
@@ -1541,27 +925,20 @@ def extract_swap_features(
                 'index': pair['index'], 'group': pair['group'], 'category': pair['category'],
                 'original_answer': pair['original_answer'], 'swapped_answer': pair['swapped_answer'],
                 'pred_orig': p_o, 'pred_swap': p_s,
-                'is_correct_orig': correct_o, 'is_correct_swap': correct_s,
                 'hs_orig': hs_o, 'hs_swap': hs_s, 'delta': delta,
             })
 
-            mark_o = "O" if correct_o else "X"
-            mark_s = "O" if correct_s else "X"
             logger.info(f"  #{pair['index']:<6} {pair['category']:<6} "
-                        f"orig[{mark_o}]=\"{p_o[:40]}\" swap[{mark_s}]=\"{p_s[:40]}\"")
+                        f"orig=\"{p_o[:40]}\" swap=\"{p_s[:40]}\"")
 
         except Exception as e:
             logger.warning(f"Error on index {pair['index']}: {e}")
 
     logger.info(f"Extracted {len(records)} records")
     for cat in CATEGORY_ORDER:
-        cat_recs = [r for r in records if r['category'] == cat]
-        n = len(cat_recs)
-        if not n:
-            continue
-        c_o = sum(r['is_correct_orig'] for r in cat_recs)
-        c_s = sum(r['is_correct_swap'] for r in cat_recs)
-        logger.info(f"  {cat:>6s} (n={n}): orig={c_o/n:.1%}, swap={c_s/n:.1%}")
+        n = sum(1 for r in records if r['category'] == cat)
+        if n:
+            logger.info(f"  {cat:>6s}: n={n}")
     return records
 
 
@@ -1627,13 +1004,6 @@ def save_scale_results(scale, swap_records, axis_coherence, delta_heatmaps, outp
     os.makedirs(csv_dir, exist_ok=True)
     os.makedirs(json_dir, exist_ok=True)
 
-    pred_rows = [{
-        'index': r['index'], 'group': r['group'], 'category': r['category'],
-        'pred_orig': r['pred_orig'], 'pred_swap': r['pred_swap'],
-        'is_correct_orig': r['is_correct_orig'], 'is_correct_swap': r['is_correct_swap'],
-    } for r in swap_records]
-    pd.DataFrame(pred_rows).to_csv(os.path.join(csv_dir, f'predictions_{scale}.csv'), index=False)
-
     coh_data = {f'{group}_L{layer}': vals for (group, layer), vals in axis_coherence.items()}
     with open(os.path.join(json_dir, f'axis_coherence_{scale}.json'), 'w') as f:
         json.dump(coh_data, f, indent=2)
@@ -1648,24 +1018,21 @@ def save_scale_results(scale, swap_records, axis_coherence, delta_heatmaps, outp
 def save_vectors_npz(scale, swap_records, target_layers, output_dir):
     delta_data = {}
     for layer in target_layers:
-        groups_, cats_, vecs_, corig_, cswap_, idxs_ = [], [], [], [], [], []
+        groups_, cats_, vecs_, idxs_ = [], [], [], []
         orig_, swap_, lbls_ = [], [], []
         for r in swap_records:
             if layer in r['delta']:
                 groups_.append(r['group']); cats_.append(r['category'])
                 vecs_.append(r['delta'][layer])
-                corig_.append(r['is_correct_orig']); cswap_.append(r['is_correct_swap'])
                 idxs_.append(r['index'])
             if layer in r['hs_orig'] and layer in r['hs_swap']:
                 orig_.append(r['hs_orig'][layer]); swap_.append(r['hs_swap'][layer])
                 lbls_.append(r['category'])
         if vecs_:
-            delta_data[f'delta_L{layer}']          = np.array(vecs_)
-            delta_data[f'groups_L{layer}']          = np.array(groups_)
-            delta_data[f'categories_L{layer}']      = np.array(cats_)
-            delta_data[f'is_correct_orig_L{layer}'] = np.array(corig_)
-            delta_data[f'is_correct_swap_L{layer}'] = np.array(cswap_)
-            delta_data[f'indices_L{layer}']         = np.array(idxs_)
+            delta_data[f'delta_L{layer}']      = np.array(vecs_)
+            delta_data[f'groups_L{layer}']     = np.array(groups_)
+            delta_data[f'categories_L{layer}'] = np.array(cats_)
+            delta_data[f'indices_L{layer}']    = np.array(idxs_)
         if orig_:
             delta_data[f'orig_L{layer}']   = np.array(orig_)
             delta_data[f'swap_L{layer}']   = np.array(swap_)
@@ -1928,17 +1295,16 @@ def process_scale(args, model_type: str, scale: str, swap_pairs: List[dict]):
     save_scale_results(scale, swap_records, axis_coh, delta_heatmaps, output_dir)
 
     # ── Plots ─────────────────────────────────────────────────────────────────
-    if not args.phase1_only:
-        logger.info("\n--- Plots ---")
-        coh_dir = os.path.join(plots_dir, 'axis_coherence')
-        os.makedirs(coh_dir, exist_ok=True)
-        plot_axis_coherence_trajectory(
-            axis_coh, scale, model_type,
-            os.path.join(coh_dir, f'axis_coherence_{scale}.png'))
-        npz_path = os.path.join(output_dir, 'npz', f'vectors_{scale}.npz')
-        if os.path.exists(npz_path):
-            run_all_layer_pca(output_dir, model_type, [scale])
-        run_all_layer_heatmaps(output_dir, model_type, [scale])
+    logger.info("\n--- Plots ---")
+    coh_dir = os.path.join(plots_dir, 'axis_coherence')
+    os.makedirs(coh_dir, exist_ok=True)
+    plot_axis_coherence_trajectory(
+        axis_coh, scale, model_type,
+        os.path.join(coh_dir, f'axis_coherence_{scale}.png'))
+    npz_path = os.path.join(output_dir, 'npz', f'vectors_{scale}.npz')
+    if os.path.exists(npz_path):
+        run_all_layer_pca(output_dir, model_type, [scale])
+    run_all_layer_heatmaps(output_dir, model_type, [scale])
 
     del swap_records
     extractor.cleanup()
@@ -1985,13 +1351,12 @@ def run_merge(args, model_type: str):
         if dh:  all_dh[scale]  = dh
         logger.info(f"  Loaded data for '{scale}'")
 
-    if not args.phase1_only:
-        coh_dir = os.path.join(plots_dir, 'axis_coherence')
-        os.makedirs(coh_dir, exist_ok=True)
-        if len(all_coh) > 1:
-            plot_cross_scale_axis_coherence(
-                all_coh, model_type,
-                os.path.join(coh_dir, 'cross_scale.png'))
+    coh_dir = os.path.join(plots_dir, 'axis_coherence')
+    os.makedirs(coh_dir, exist_ok=True)
+    if len(all_coh) > 1:
+        plot_cross_scale_axis_coherence(
+            all_coh, model_type,
+            os.path.join(coh_dir, 'cross_scale.png'))
 
     logger.info(f"\n=== Merge complete. Results in: {merge_out} ===")
 
@@ -2015,7 +1380,7 @@ Merge configs:
 
 Examples:
   # Run a single model
-  python probing.py --model_type prismatic --scales 7b-dino
+  python probing.py --model_type qwen25 --scales 3b
 
   # Run all checkpoints of a model family
   python probing.py --model_type qwen25
@@ -2025,8 +1390,11 @@ Examples:
 """)
 
     parser.add_argument('--data_path', type=str,
-                        default='/data/shared/Qwen/EmbSpatial-Bench/EmbSpatial-Bench.tsv',
-                        help='Path to the EmbSpatialBench TSV file.')
+                        default='./data/EmbSpatial-Bench.tsv',
+                        help="Path to the EmbSpatial-Bench TSV file. "
+                             "Download with: "
+                             "`huggingface-cli download ch-min/EmbSpatial-Bench-tsv "
+                             "EmbSpatial-Bench.tsv --repo-type dataset --local-dir ./data`.")
     parser.add_argument('--model_type', type=str, required=True,
                         choices=all_model_types,
                         help='Model family to run (see registered models above).')
@@ -2046,10 +1414,6 @@ Examples:
     parser.add_argument('--max-samples-per-category', type=int, default=200,
                         dest='max_samples_per_category',
                         help='Maximum swap pairs per spatial category (0 = no limit).')
-    parser.add_argument('--no-filtering', action='store_true', dest='no_filtering',
-                        help='Disable Unknown/empty filtering for far/close pairs.')
-    parser.add_argument('--phase1-only', action='store_true', dest='phase1_only',
-                        help='Skip all plot generation; only save data (npz/csv/json).')
 
     args = parser.parse_args()
 
@@ -2088,10 +1452,7 @@ Examples:
 
     # ── Inference mode ────────────────────────────────────────────────────────
     logger.info("\n=== Loading swap pairs ===")
-    swap_pairs = load_swap_pairs(
-        args.data_path, args.seed,
-        filter_unknown=not args.no_filtering,
-    )
+    swap_pairs = load_swap_pairs(args.data_path, args.seed)
 
     spec = MODEL_REGISTRY[args.model_type]
     for scale in args.scales:
