@@ -120,7 +120,7 @@ You can use any other benchmark by producing a TSV with the same columns
 ```bash
 python probing.py \
     --model_type qwen25 \
-    --scales 3b \
+    --scales vanilla \
     --data_path /path/to/EmbSpatial-Bench.tsv
 ```
 
@@ -161,10 +161,10 @@ parallel on assigned GPUs, e.g. `scripts/run_qwen.sh`.
 ```
 results/
   saved_data/
-    qwen25_3b/
-      npz/  vectors_3b.npz                 # raw embeddings + Δ vectors per layer
-      csv/  delta_similarity_3b_L<k>.csv   # 6×6 matrices, one per layer
-      json/ axis_coherence_3b.json         # mean / std / n per (group, layer)
+    qwen25_vanilla/
+      npz/  vectors_vanilla.npz                 # raw embeddings + Δ vectors per layer
+      csv/  delta_similarity_vanilla_L<k>.csv   # 6×6 matrices, one per layer
+      json/ axis_coherence_vanilla.json         # mean / std / n per (group, layer)
       plots/
         axis_coherence/...
         heatmap/...

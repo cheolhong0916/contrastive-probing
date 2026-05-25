@@ -25,7 +25,7 @@ Analyses produced
 USAGE EXAMPLES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # Run a single registered model
-  python probing.py --model_type qwen25 --scales 3b
+  python probing.py --model_type qwen25 --scales vanilla
 
   # Run all checkpoints for a model family
   python probing.py --model_type qwen25
@@ -663,9 +663,11 @@ class NVILAExtractor(BaseHiddenStateExtractor):
 MODEL_REGISTRY["qwen25"] = ModelSpec(
     extractor_class   = Qwen25VLExtractor,
     checkpoints       = {
-        "3b"  : "Qwen/Qwen2.5-VL-3B-Instruct",
-        # Add fine-tuned checkpoints here, e.g.:
-        # "ft_80k" : "/path/to/qwen25_ft_80k",
+        "vanilla" : "Qwen/Qwen2.5-VL-3B-Instruct",
+        "80k"     : "ch-min/Qwen2.5-VL-3B-Instruct-data_scale_exp_80k-20251114_120221",
+        "400k"    : "ch-min/Qwen2.5-VL-3B-Instruct-data_scale_exp_400k-20251114_120221",
+        "800k"    : "ch-min/Qwen2.5-VL-3B-Instruct-data_scale_exp_800k-20251114_120221",
+        "2m"      : "ch-min/Qwen2.5-VL-3B-Instruct-data_scale_exp_2m-20260109_120517",
     },
     display_name      = "Qwen2.5-VL",
     base_processor_id = "Qwen/Qwen2.5-VL-3B-Instruct",
@@ -685,7 +687,11 @@ MODEL_REGISTRY["qwen3"] = ModelSpec(
 MODEL_REGISTRY["molmo"] = ModelSpec(
     extractor_class = MolmoExtractor,
     checkpoints     = {
-        "7b" : "allenai/Molmo-7B-O-0924",
+        "vanilla" : "allenai/Molmo-7B-O-0924",
+        "80k"     : "ch-min/molmo-7B-O-0924-data_scale_exp_80k",
+        "400k"    : "ch-min/molmo-7B-O-0924-data_scale_exp_400k",
+        "800k"    : "ch-min/molmo-7B-O-0924-data_scale_exp_800k",
+        "2m"      : "ch-min/molmo-7B-O-0924-data_scale_exp_2m",
     },
     display_name = "Molmo-7B",
     plot_color   = "#ff7f0e",
@@ -703,11 +709,12 @@ MODEL_REGISTRY["molmo2"] = ModelSpec(
 MODEL_REGISTRY["nvila"] = ModelSpec(
     extractor_class = NVILAExtractor,
     checkpoints     = {
-        "2b"          : "Efficient-Large-Model/NVILA-Lite-2B",
-        # Comparison checkpoints for R1_m2 (balanced ST FT vs base vs general 80k mix).
-        "vanilla"     : "Efficient-Large-Model/NVILA-Lite-2B",
-        "80k"         : "/home/v-cheomin/experiments/contrastive-probing/models/nvila_80k_general",
-        "balanced-st" : "/home/v-cheomin/mnt/blob_caching/results/r1m2_st_balanced/NVILA-Lite-2B-SPATIAL_TUNNEL_BALANCED_80K-v1",
+        "vanilla"   : "Efficient-Large-Model/NVILA-Lite-2B",
+        "80k"       : "ch-min/NVILA-Lite-2B-DATA_SCALE_EXP_80K-20251108_180221",
+        "400k"      : "ch-min/NVILA-Lite-2B-DATA_SCALE_EXP_400K-20251108_180221",
+        "800k"      : "ch-min/NVILA-Lite-2B-DATA_SCALE_EXP_800K-20251108_180221",
+        "2m"        : "ch-min/NVILA-Lite-2B-DATA_SCALE_EXP_2M-20260205_003632",
+        "roborefer" : "Zhoues/RoboRefer-2B-SFT",  # third-party checkpoint
     },
     display_name = "NVILA-Lite",
     plot_color   = "#2ca02c",
@@ -1380,7 +1387,7 @@ Merge configs:
 
 Examples:
   # Run a single model
-  python probing.py --model_type qwen25 --scales 3b
+  python probing.py --model_type qwen25 --scales vanilla
 
   # Run all checkpoints of a model family
   python probing.py --model_type qwen25

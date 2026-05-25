@@ -4,6 +4,8 @@
 # Allow this gitignore itself
 !.gitignore
 
-# Allow the published code + docs
+# Allow the published code + docs + shell wrappers
 !README.md
 !probing.py
+!scripts/
+!scripts/*.sh
