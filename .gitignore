@@ -9,3 +9,7 @@
 !probing.py
 !scripts/
 !scripts/*.sh
+!envs/
+!envs/README.md
+!envs/requirements-*.txt
+!envs/conda-*.yaml

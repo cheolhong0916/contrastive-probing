@@ -3,7 +3,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$(dirname "$SCRIPT_DIR")/probing.py"
-PYTHON="conda run --no-capture-output -n vila python"
+# Set PYTHON to the interpreter of the env that satisfies envs/requirements-vila.txt
+# (transformers <= 4.46 + VILA repo on PYTHONPATH). Examples:
+#   PYTHON="python3"
+#   PYTHON="conda run --no-capture-output -n probing-vila python"
+#   PYTHON="/path/to/.venv-vila/bin/python"
+PYTHON="${PYTHON:-python3}"
 MODEL="nvila"
 
 # Logs go to results/logs/ (managed by probing.py)

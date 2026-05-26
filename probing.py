@@ -426,13 +426,20 @@ class Qwen25VLExtractor(BaseHiddenStateExtractor):
         ).eval()
         proc_id = self.base_processor_id or self.model_path
         self.processor = AutoProcessor.from_pretrained(proc_id)
+        self.llm_layers = _find_llm_layers(self.model, [
+            ['model', 'layers'],
+            ['model', 'language_model', 'layers'],
+            ['model', 'language_model', 'model', 'layers'],
+        ], hint='Qwen2.5-VL')
+        if self.llm_layers is None:
+            raise ValueError("Could not find transformer layers in Qwen2.5-VL model")
         logger.info(f"Loaded Qwen2.5-VL from {self.model_path}")
 
     def _get_num_layers(self) -> int:
-        return len(self.model.model.layers)
+        return len(self.llm_layers)
 
     def _get_layer_module(self, layer_idx: int):
-        return self.model.model.layers[layer_idx]
+        return self.llm_layers[layer_idx]
 
     def extract_and_predict(self, image, question):
         self.hidden_states = {}
@@ -688,10 +695,6 @@ MODEL_REGISTRY["molmo"] = ModelSpec(
     extractor_class = MolmoExtractor,
     checkpoints     = {
         "vanilla" : "allenai/Molmo-7B-O-0924",
-        "80k"     : "ch-min/molmo-7B-O-0924-data_scale_exp_80k",
-        "400k"    : "ch-min/molmo-7B-O-0924-data_scale_exp_400k",
-        "800k"    : "ch-min/molmo-7B-O-0924-data_scale_exp_800k",
-        "2m"      : "ch-min/molmo-7B-O-0924-data_scale_exp_2m",
     },
     display_name = "Molmo-7B",
     plot_color   = "#ff7f0e",

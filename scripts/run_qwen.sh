@@ -3,7 +3,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$(dirname "$SCRIPT_DIR")/probing.py"
-PYTHON="/usr/bin/python3"
+# Set PYTHON to the interpreter of the env that satisfies envs/requirements-qwen.txt
+# (transformers >= 4.57 + qwen-vl-utils). Examples:
+#   PYTHON="python3"
+#   PYTHON="conda run --no-capture-output -n probing-qwen python"
+#   PYTHON="/path/to/.venv-qwen/bin/python"
+PYTHON="${PYTHON:-python3}"
 MODEL="qwen"
 
 # Logs go to results/logs/ (managed by probing.py)
