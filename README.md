@@ -62,7 +62,7 @@ analyses without re-running inference.
 | Paper (arXiv) | Coming soon |
 | EmbSpatial-Bench TSV (dataset) | [ch-min/EmbSpatial-Bench-tsv](https://huggingface.co/datasets/ch-min/EmbSpatial-Bench-tsv) |
 | SpatialTunnel dataset generation | [cube-c/spatialtunnel-dataset-gen](https://github.com/cube-c/spatialtunnel-dataset-gen) |
-| Fine-tuned checkpoints (Qwen2.5-VL-3B & NVILA-Lite-2B, 80k–2M) | [HF Collection](https://huggingface.co/collections/ch-min/why-far-looks-up-data-scale-fine-tuned-checkpoints) |
+| Fine-tuned checkpoints (80k / 400k / 800k / 2M) | [HF Collection](https://huggingface.co/collections/ch-min/why-far-looks-up-data-scale-fine-tuned-checkpoints) |
 
 Exact HF repo IDs for each scale are registered in `probing.py`
 (`MODEL_REGISTRY`).
