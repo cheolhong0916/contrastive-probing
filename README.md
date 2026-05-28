@@ -2,6 +2,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-lightgrey.svg)](#)
 [![Project Page](https://img.shields.io/badge/Project%20Page-online-blue.svg)](https://cheolhong0916.github.io/whyfarlooksup.github.io/)
+[![SpatialTunnel](https://img.shields.io/badge/SpatialTunnel-dataset-green.svg)](https://github.com/cube-c/spatialtunnel-dataset-gen)
 
 A lightweight framework for diagnosing **how vision-language models internally
 represent spatial relations** — *left / right*, *above / below*, *far / close* —
@@ -110,6 +111,25 @@ and filters `Unknown` distance answers automatically.
 
 You can use any other benchmark by producing a TSV with the same columns
 (`index, question_id, category, question, image, answer, A, B, C, D`).
+
+### SpatialTunnel synthetic benchmark
+
+**SpatialTunnel** is the Blender-rendered diagnostic benchmark introduced in
+the paper to isolate spatial-shortcut biases by removing background and
+perspective confounds. The generation code lives in a separate repository:
+
+  👉 [`cube-c/spatialtunnel-dataset-gen`](https://github.com/cube-c/spatialtunnel-dataset-gen)
+
+It provides two rendering pipelines that drive Blender (5.1.1+) via its
+bundled Python:
+
+| Script | What it varies | Output |
+|---|---|---|
+| `run_phase_variation.sh` | Object angular positions on a 16×16 grid (`--num 12` variants) | up to 3,072 renders + `log.csv` |
+| `run_size_variation.sh`  | Object size pairs (`Obj1` 0.1–0.3, `Obj2 = 0.4 − Obj1`, 11 steps, `--num 100` variants) | up to 1,100 renders + `log.csv` |
+
+See that repository's README for Blender installation, CUDA flags, and per-
+script options.
 
 ---
 
@@ -236,9 +256,3 @@ If you use this code or methodology, please cite our paper.
   year    = {2026},
 }
 ```
-
-## License
-
-The paper is deposited on arXiv under the
-[arXiv.org perpetual, non-exclusive license to distribute](https://arxiv.org/licenses/nonexclusive-distrib/1.0/).
-Copyright is retained by the authors.
