@@ -53,6 +53,23 @@ analyses without re-running inference.
 
 ---
 
+## Release
+
+| Component | Link |
+|---|---|
+| Contrastive probing code (this repo) | [cheolhong0916/contrastive-probing](https://github.com/cheolhong0916/contrastive-probing) |
+| Project page | [whyfarlooksup](https://cheolhong0916.github.io/whyfarlooksup.github.io/) |
+| Paper (arXiv) | Coming soon |
+| EmbSpatial-Bench TSV (dataset) | [ch-min/EmbSpatial-Bench-tsv](https://huggingface.co/datasets/ch-min/EmbSpatial-Bench-tsv) |
+| SpatialTunnel dataset generation | [cube-c/spatialtunnel-dataset-gen](https://github.com/cube-c/spatialtunnel-dataset-gen) |
+| Qwen2.5-VL-3B data-scale checkpoints (80k / 400k / 800k / 2m) | [ch-min · HF profile](https://huggingface.co/ch-min) |
+| NVILA-Lite-2B data-scale checkpoints (80k / 400k / 800k / 2m) | [ch-min · HF profile](https://huggingface.co/ch-min) |
+
+Exact HF repo IDs for each scale are registered in `probing.py`
+(`MODEL_REGISTRY`).
+
+---
+
 ## Supported models
 
 The framework ships with extractor wrappers for the following VLM families.
@@ -112,7 +129,7 @@ and filters `Unknown` distance answers automatically.
 You can use any other benchmark by producing a TSV with the same columns
 (`index, question_id, category, question, image, answer, A, B, C, D`).
 
-### SpatialTunnel synthetic benchmark
+### SpatialTunnel benchmark
 
 **SpatialTunnel** is the Blender-rendered diagnostic benchmark introduced in
 the paper to isolate spatial-shortcut biases by removing background and
