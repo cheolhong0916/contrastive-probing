@@ -2,7 +2,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-lightgrey.svg)](#)
 [![Project Page](https://img.shields.io/badge/Project%20Page-online-blue.svg)](https://cheolhong0916.github.io/whyfarlooksup.github.io/)
-[![SpatialTunnel](https://img.shields.io/badge/SpatialTunnel-dataset-green.svg)](https://github.com/cube-c/spatialtunnel-dataset-gen)
+[![SpatialTunnel](https://img.shields.io/badge/SpatialTunnel-dataset-green.svg)](https://huggingface.co/datasets/cubec/spatialtunnel)
 
 A lightweight framework for diagnosing **how vision-language models internally
 represent spatial relations** — *left / right*, *above / below*, *far / close* —
