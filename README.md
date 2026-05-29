@@ -1,6 +1,6 @@
 # Why Far Looks Up: Probing Spatial Representation in Vision-Language Models
 
-[![arXiv](https://img.shields.io/badge/arXiv-coming%20soon-lightgrey.svg)](#)
+[![arXiv](https://img.shields.io/badge/arXiv-2605.30161-b31b1b.svg)](https://arxiv.org/abs/2605.30161)
 [![Project Page](https://img.shields.io/badge/Project%20Page-online-blue.svg)](https://cheolhong0916.github.io/whyfarlooksup.github.io/)
 [![SpatialTunnel](https://img.shields.io/badge/SpatialTunnel-dataset-green.svg)](https://github.com/cube-c/spatialtunnel-dataset-gen)
 
@@ -59,7 +59,7 @@ analyses without re-running inference.
 |---|---|
 | Contrastive probing code (this repo) | [cheolhong0916/contrastive-probing](https://github.com/cheolhong0916/contrastive-probing) |
 | Project page | [whyfarlooksup](https://cheolhong0916.github.io/whyfarlooksup.github.io/) |
-| Paper (arXiv) | Coming soon |
+| Paper (arXiv) | [arXiv:2605.30161](https://arxiv.org/abs/2605.30161) |
 | EmbSpatial-Bench TSV (dataset) | [ch-min/EmbSpatial-Bench-tsv](https://huggingface.co/datasets/ch-min/EmbSpatial-Bench-tsv) |
 | SpatialTunnel dataset generation | [cube-c/spatialtunnel-dataset-gen](https://github.com/cube-c/spatialtunnel-dataset-gen) |
 | Fine-tuned checkpoints (80k / 400k / 800k / 2M) | [HF Collection](https://huggingface.co/collections/ch-min/why-far-looks-up-data-scale-fine-tuned-checkpoints) |
@@ -268,7 +268,7 @@ If you use this code or methodology, please cite our paper.
   title   = {Why Far Looks Up: Probing Spatial Representation in Vision-Language Models},
   author  = {Min, Cheolhong and Jung, Jaeyun and Lee, Daeun and Jeon, Hyeonseong and
              Su, Yu and Tremblay, Jonathan and Song, Chan Hee and Park, Jaesik},
-  journal = {arXiv preprint arXiv:XXXX.XXXXX},
+  journal = {arXiv preprint arXiv:2605.30161},
   year    = {2026},
 }
 ```
