@@ -61,6 +61,7 @@ analyses without re-running inference.
 | Project page | [whyfarlooksup](https://cheolhong0916.github.io/whyfarlooksup.github.io/) |
 | Paper (arXiv) | [arXiv:2605.30161](https://arxiv.org/abs/2605.30161) |
 | EmbSpatial-Bench TSV (dataset) | [ch-min/EmbSpatial-Bench-tsv](https://huggingface.co/datasets/ch-min/EmbSpatial-Bench-tsv) |
+| SpatialTunnel (dataset) | [cubec/spatialtunnel](https://huggingface.co/datasets/cubec/spatialtunnel) |
 | SpatialTunnel dataset generation | [cube-c/spatialtunnel-dataset-gen](https://github.com/cube-c/spatialtunnel-dataset-gen) |
 | Fine-tuned checkpoints (80k / 400k / 800k / 2M) | [HF Collection](https://huggingface.co/collections/ch-min/why-far-looks-up-data-scale-fine-tuned-checkpoints) |
 
