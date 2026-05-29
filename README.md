@@ -133,20 +133,21 @@ You can use any other benchmark by producing a TSV with the same columns
 
 **SpatialTunnel** is the Blender-rendered diagnostic benchmark introduced in
 the paper to isolate spatial-shortcut biases by removing background and
-perspective confounds. The generation code lives in a separate repository:
+perspective confounds. The benchmark data is available on the Hugging Face Hub
+at [`cubec/spatialtunnel`](https://huggingface.co/datasets/cubec/spatialtunnel).
+
+It is organized into three TSV configs:
+
+| Config | What it varies | Rows |
+|---|---|---|
+| `contrastive_probing` | Balanced questions used to form contrastive pairs. | 1,200 |
+| `phase_variation` | Object angular positions across a controlled 16×16 spatial grid for vertical-distance shortcut analysis. | 3,072 |
+| `size_variation` | Object size pairs under controlled apparent-size changes for size-distance shortcut analysis. | 1,100 |
+
+All configs are tab-separated files with base64-encoded PNG images, spatial
+questions, and ground-truth answers. The generation code lives in a separate repository:
 
   👉 [`cube-c/spatialtunnel-dataset-gen`](https://github.com/cube-c/spatialtunnel-dataset-gen)
-
-It provides two rendering pipelines that drive Blender (5.1.1+) via its
-bundled Python:
-
-| Script | What it varies | Output |
-|---|---|---|
-| `run_phase_variation.sh` | Object angular positions on a 16×16 grid (`--num 12` variants) | up to 3,072 renders + `log.csv` |
-| `run_size_variation.sh`  | Object size pairs (`Obj1` 0.1–0.3, `Obj2 = 0.4 − Obj1`, 11 steps, `--num 100` variants) | up to 1,100 renders + `log.csv` |
-
-See that repository's README for Blender installation, CUDA flags, and per-
-script options.
 
 ---
 
