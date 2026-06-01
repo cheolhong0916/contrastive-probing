@@ -87,10 +87,10 @@ Adding a new family is two short methods + one registry entry (see
 ### Layer selection
 
 Paper-reported metrics use a single layer L\* per model — picked (paper
-App. D.3) by three textual criteria: (i) axis coherence on all three axes
-is at or near its plateau, (ii) VD-EI is on a stable plateau rather than
-in a transient region, (iii) avoid the last few layers, which specialise
-on next-token prediction rather than rich representations.
+**App. D.3**) by three textual criteria: (i) axis coherence on all three
+axes is at or near its plateau, (ii) VD-EI is on a stable plateau rather
+than in a transient region, (iii) avoid the last few layers, which
+specialise on next-token prediction rather than rich representations.
 
 For the four registered families below, L\* is already stored on
 `MODEL_REGISTRY[<model_type>]` as `paper_layer` / `paper_plateau` /
@@ -105,14 +105,15 @@ a new model**:
 
 For a programmatic short-list, `python probing.py --model_type <m>
 --recommend-layer` reports a **candidate range** and a top-`k` short-list
-within it (default `k=3`). The candidate range follows paper App. D.4 —
+within it (default `k=3`). The candidate range follows paper **App. D.4** —
 *"the union of layers where CohH, CohV, and CohD are near peak"* — after
 dropping the last `--recommend-frac` of layers (default `0.07`; very deep
 or MoE models may need a smaller value, very shallow models tolerate
 larger). The paper notes that cross-model CohD rankings agree within
 range at Spearman ρ = 0.928, so the load-bearing output is the range
 itself — `recommended` and `top_k` are kept for back-compat and as
-representative picks; any layer inside the range is a defensible choice.
+representative picks; layers inside the range are reasonable starting
+candidates.
 
 | `model_type` | total | L\* | depth | plateau |
 |---|---:|---:|---:|---|
