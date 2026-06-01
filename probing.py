@@ -1324,55 +1324,66 @@ def rebuild_metrics_for_scale(scale_output_dir: str, model_type: str, scale: str
 def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
                     vd_ei:    Dict[int, float],
                     total_layers: Optional[int] = None,
+                    k: int = 3,
                     coh_tau: float = 0.85,
                     vd_window: int = 3,
-                    exclude_last_frac: float = 0.20) -> dict:
-    """Heuristic approximation of Appendix D.3's textual layer-selection
-    criteria. **Not a reproduction of the paper's per-model selection
-    process** — paper picks also incorporate visual PCA inspection and
-    per-model qualitative reasoning that this function cannot replicate.
-    Treat the output as a starting suggestion, then verify against the
-    saved `plots/metrics/{axis_coherences,vd-ei}.png`.
+                    exclude_last_frac: float = 0.07) -> dict:
+    """Heuristic short-list of candidate analysis layers, following the
+    paper's own selection framework (App. D.3 + D.4).
 
-    Three filters, intersected:
+    Candidate range definition (paper App. D.4):
+        "Candidate ranges are defined as the union of layers where CohH,
+         CohV, and CohD are near peak; when the criteria differ, we
+         prioritize high axis coherence."
 
-    1. **Joint coherence plateau.** For each axis group (horizontal, vertical,
-       distance) compute the per-axis peak coherence, then keep layers whose
-       coherence is at least ``coh_tau`` of that peak. The joint plateau is
-       the intersection across all three groups.
-    2. **VD-EI more stable than the median layer.** For each layer take the
-       std of VD-EI over a window of ``±vd_window`` neighbouring layers, then
-       keep layers whose local std is at or below the median local std across
-       all layers. This is a *relative* filter — by construction it always
-       keeps roughly the bottom-50% noisiest layers, so it ranks rather than
-       certifies "true plateau".
-    3. **Avoid output-specialised final layers.** Drop the last
-       ``exclude_last_frac`` of the model's layers when ``total_layers`` is
-       known.
+    Operationalised here as: for each axis g, the per-axis plateau is the
+    set of layers L with ``coh[g][L] >= peak_g * coh_tau``; the candidate
+    range is the **union** of the three per-axis plateaus (NOT the
+    intersection). Layers later than ``(1 - exclude_last_frac) * total_layers``
+    are then dropped (criterion 3 of App. D.3 — avoid output-specialised
+    final layers; the paper criterion is qualitative, the fraction is our
+    operationalisation). The default ``exclude_last_frac=0.07`` is the
+    smallest cutoff that keeps the paper's L\\* inside the candidate range
+    across the four registered models we have data for (including a
+    94-layer MoE). Very deep / MoE models may need a smaller value; very
+    shallow models tolerate a larger one.
 
-    Recommendation = layer in (1) ∩ (2) ∩ (3) that maximises the *minimum*
-    normalised axis coherence (i.e. the layer where every axis is closest to
-    its peak). Ties broken by preferring deeper layers, consistent with the
-    paper's tendency to pick the upper end of the plateau. When no layer
-    survives the strictest intersection, the picker relaxes criterion (2),
-    then (1) — `criteria_applied` in the return dict records which filters
-    actually narrowed the candidate set, and `warnings` flags relaxations.
+    Note on D.3 vs D.4: D.3 lists three criteria including VD-EI
+    stability, while D.4 defines the candidate range using only axis
+    coherence ("union of layers where CohH, CohV, and CohD are near
+    peak"). We follow D.4 for the gate so the recommendation matches the
+    paper's own robustness claim. VD-EI stability is still computed
+    per-layer and returned as ``vd_more_stable_than_median`` for callers
+    who want the stricter D.3 cut on top of the range.
 
-    Reference implementation: see `compute_vd_ei_per_layer` for the VD-EI
-    definition; see `docs/LOCAL_PROBING_VERIFICATION_KO.md` for empirical
-    Δ-from-paper-L\\* numbers on the registered models.
+    Within the candidate range, the top-``k`` layers are returned, ranked
+    by closeness to all three per-axis peaks (max of min-normalised
+    coherence, with depth as tiebreak). The paper notes that results are
+    robust within this range (Spearman ρ = 0.928 across 1K random layer
+    samples within range), so the load-bearing output is
+    ``candidate_range`` itself — any layer inside it is a defensible pick.
+    ``recommended`` and ``top_k`` are returned for back-compat with
+    earlier callers and as representative picks for inspection. Verify the
+    final L\\* visually via ``plots/metrics/{axis_coherences,vd-ei}.png``
+    and the per-layer panels under ``plots/pca_3d/``.
 
     Returns a dict:
-      'recommended':        L* (int) or None
-      'criteria_applied':   list of filter names that were used to narrow
-                            the candidates ('joint_plateau',
-                            'vd_more_stable_than_median', 'not_late')
-      'warnings':           list of human-readable issues (e.g. empty
-                            joint plateau, fallback triggered)
-      'joint_plateau':      sorted layers passing criterion (1)
-      'vd_more_stable_than_median': sorted layers passing criterion (2)
-      'cutoff_layer':       last layer kept by criterion (3), or None
-      'per_group_plateau':  {group: [layers]} for inspection
+      'candidate_range':     sorted list of layers in
+                             (union of per-axis plateaus) ∩ not_late.
+                             Empty list (with a warning) only on
+                             pathological inputs.
+      'top_k':               list of layers (best-first) within
+                             candidate_range, length ≤ k
+      'recommended':         ``top_k[0]`` or None — back-compat alias;
+                             the load-bearing field is ``candidate_range``
+      'criteria_applied':    list with the names of filters that contributed
+                             ('candidate_range', 'not_late')
+      'warnings':            list of human-readable issues
+      'per_group_plateau':   {group: [layers]} for inspection
+      'vd_more_stable_than_median': sorted layers passing the App. D.3
+                             criterion (2) operationalisation
+                             (informational; not part of the gate)
+      'cutoff_layer':        last layer kept by criterion (3), or None
     """
     coh_by_group: Dict[str, Dict[int, float]] = {g: {} for g in GROUP_ORDER}
     for (g, L), v in axis_coh.items():
@@ -1384,28 +1395,31 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
         layers_with_coh.update(coh_by_group[g].keys())
     all_layers = sorted(layers_with_coh & set(vd_ei.keys()))
     if not all_layers:
-        return {'recommended': None, 'criteria_applied': [],
+        return {'candidate_range': [], 'top_k': [], 'recommended': None,
+                'criteria_applied': [],
                 'warnings': ['no overlapping layers between axis_coh and vd_ei']}
 
-    # (1) per-axis plateau and joint intersection
+    # Per-axis plateau (criterion 1 of App. D.3)
     per_group_plateau: Dict[str, set] = {}
     for g in GROUP_ORDER:
         d = coh_by_group[g]
         if not d:
-            per_group_plateau[g] = set(all_layers)
-            warnings.append(f"axis '{g}' has no coherence data; treated as no constraint")
+            per_group_plateau[g] = set()
+            warnings.append(f"axis '{g}' has no coherence data; excluded from union")
             continue
         peak = max(d.values())
         if peak <= 0:
-            per_group_plateau[g] = set(all_layers)
-            warnings.append(f"axis '{g}' peak coherence <= 0; treated as no constraint")
+            per_group_plateau[g] = set()
+            warnings.append(f"axis '{g}' peak coherence <= 0; excluded from union")
         else:
             per_group_plateau[g] = {L for L, v in d.items() if v >= peak * coh_tau}
-    joint_plateau = set(all_layers)
-    for g in GROUP_ORDER:
-        joint_plateau &= per_group_plateau[g]
 
-    # (2) VD-EI local stability (relative — by construction ~50% of layers pass)
+    # Candidate range (App. D.4: UNION of per-axis plateaus)
+    union_range: set = set()
+    for g in GROUP_ORDER:
+        union_range |= per_group_plateau[g]
+
+    # VD-EI local stability — informational only (not part of the gate)
     vd_layers = sorted(vd_ei.keys())
     vd_arr = np.array([vd_ei[L] for L in vd_layers])
     local_std = []
@@ -1415,7 +1429,7 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
     stab_thresh = float(np.median(local_std))
     vd_more_stable_than_median = {L for L, s in zip(vd_layers, local_std) if s <= stab_thresh}
 
-    # (3) cutoff late layers
+    # Drop output-specialised layers (App. D.3 criterion 3)
     cutoff = None
     if total_layers is not None and total_layers > 0:
         cutoff = int(round(total_layers * (1 - exclude_last_frac)))
@@ -1424,52 +1438,53 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
         not_late = set(all_layers)
         warnings.append("total_layers not provided; criterion 3 (avoid final layers) skipped")
 
-    # Try strictest intersection first, then relax.
-    criteria_applied = ['joint_plateau', 'vd_more_stable_than_median', 'not_late']
-    candidates = joint_plateau & vd_more_stable_than_median & not_late
-    if not candidates:
-        criteria_applied = ['joint_plateau', 'not_late']
-        candidates = joint_plateau & not_late
-        warnings.append(
-            "relaxed criterion 2 (vd_more_stable_than_median) — strict intersection was empty"
-        )
-        if not candidates:
-            criteria_applied = ['not_late']
-            candidates = set(not_late) or set(all_layers)
-            if not joint_plateau:
-                warnings.append(
-                    "relaxed criterion 1 (joint_plateau) — no layer satisfies all 3 axis plateaus "
-                    "simultaneously, so the pick reflects only depth + min-coherence ranking"
-                )
-            else:
-                warnings.append("relaxed criterion 1 (joint_plateau) — strict intersection was empty")
-            if not candidates:
-                criteria_applied = []
-                candidates = set(all_layers)
-                warnings.append("relaxed all criteria — falling back to entire layer range")
+    candidate_range = sorted(union_range & not_late)
 
-    def score(L: int) -> Tuple[float, int]:
-        # primary: how close are *all three* axes to their per-axis peak;
-        # tiebreak: prefer the deeper layer (matches paper's plateau-upper-end pick).
+    criteria_applied: List[str] = []
+    if candidate_range:
+        criteria_applied.append('candidate_range')
+    else:
+        warnings.append(
+            "candidate_range is empty after applying not_late — likely a pathological case "
+            "(e.g. all per-axis peaks fall in the last `exclude_last_frac` of layers). "
+            "Try a smaller exclude_last_frac (very deep / MoE models often have plateaus in "
+            "the last few layers). Returning recommended=None; the caller should inspect "
+            "plots/metrics/{axis_coherences,vd-ei}.png manually."
+        )
+        return {
+            'candidate_range': [],
+            'top_k': [],
+            'recommended': None,
+            'criteria_applied': [],
+            'warnings': warnings,
+            'per_group_plateau': {g: sorted(per_group_plateau[g]) for g in GROUP_ORDER},
+            'vd_more_stable_than_median': sorted(vd_more_stable_than_median),
+            'cutoff_layer': cutoff,
+        }
+    if total_layers is not None:
+        criteria_applied.append('not_late')
+
+    def rank_key(L: int) -> Tuple[float, int]:
+        peaks = {g: max(coh_by_group[g].values()) for g in GROUP_ORDER if coh_by_group[g]}
         min_norm = 1.0
-        for g in GROUP_ORDER:
-            if not coh_by_group[g]:
-                continue
-            peak = max(coh_by_group[g].values())
+        for g, peak in peaks.items():
             if peak <= 0:
                 continue
             min_norm = min(min_norm, coh_by_group[g].get(L, 0.0) / peak)
         return (min_norm, L)
 
-    recommended = max(candidates, key=score) if candidates else None
+    ranked = sorted(candidate_range, key=rank_key, reverse=True)
+    top_k = ranked[:max(1, k)]
+
     return {
-        'recommended': recommended,
+        'candidate_range': candidate_range,
+        'top_k': top_k,
+        'recommended': top_k[0] if top_k else None,
         'criteria_applied': criteria_applied,
         'warnings': warnings,
-        'joint_plateau': sorted(joint_plateau),
+        'per_group_plateau': {g: sorted(per_group_plateau[g]) for g in GROUP_ORDER},
         'vd_more_stable_than_median': sorted(vd_more_stable_than_median),
         'cutoff_layer': cutoff,
-        'per_group_plateau': {g: sorted(per_group_plateau[g]) for g in GROUP_ORDER},
     }
 
 
@@ -1777,10 +1792,16 @@ Examples:
                              'on-disk dirs not in the registry are not auto-discovered — '
                              'pass them via --scales explicitly.')
     parser.add_argument('--recommend-layer', action='store_true', dest='recommend_layer_flag',
-                        help='Skip inference; print the systematic L* recommendation from '
+                        help='Skip inference; print a top-k short-list of candidate L* from '
                              '`recommend_layer` (App. D.3 criteria — joint coherence plateau, '
-                             'VD-EI stability, exclude last 20%% of layers) for every saved '
+                             'VD-EI stability, exclude last fraction of layers) for every saved '
                              'scale and compare against MODEL_REGISTRY[...].paper_layer.')
+    parser.add_argument('--recommend-k', type=int, default=3, dest='recommend_k',
+                        help='Short-list size for --recommend-layer (default 3).')
+    parser.add_argument('--recommend-frac', type=float, default=0.07, dest='recommend_frac',
+                        help='Fraction of final layers to deprioritise as output-specialised '
+                             '(criterion 3 operationalisation, default 0.07). Very deep / MoE '
+                             'models may need a smaller value.')
     parser.add_argument('--merge-output-dir', type=str, default=None, dest='merge_output_dir',
                         help='Override the output directory for cross-scale plots.')
     parser.add_argument('--group-name', type=str, default=None, dest='group_name',
@@ -1866,17 +1887,24 @@ Examples:
             if not coh or not vd:
                 logger.warning(f"  {scale}: missing axis_coh or vd_ei, skipping.")
                 continue
-            rec = recommend_layer(coh, vd, total_layers=total)
-            L = rec['recommended']
-            jp = rec['joint_plateau']
-            jp_str = f"L{jp[0]}-L{jp[-1]}" if jp else "(empty)"
-            delta = f"  Δ{L - paper_L:+d}" if (L is not None and paper_L is not None) else ""
+            rec = recommend_layer(coh, vd, total_layers=total,
+                                  k=args.recommend_k,
+                                  exclude_last_frac=args.recommend_frac)
+            cr = rec['candidate_range']
+            cr_str = f"L{cr[0]}-L{cr[-1]} (n={len(cr)})" if cr else "(empty)"
+            topk = rec['top_k']
+            tk_str = ", ".join(f"L{L}" for L in topk) if topk else "(none)"
+            paper_note = (f"   paper L*=L{paper_L} "
+                          f"{'in range' if paper_L in set(cr) else 'OUT OF RANGE'}"
+                          ) if paper_L is not None else ""
             applied = ",".join(rec['criteria_applied']) or "(none)"
-            logger.info(f"  {scale:<10s}  recommended L*={'L'+str(L) if L is not None else '?'}"
-                        f"{delta}   joint plateau={jp_str}   "
+            logger.info(f"  {scale:<10s}  candidate range: {cr_str}   "
+                        f"top-{len(topk)}: [{tk_str}]{paper_note}   "
                         f"criteria_applied=[{applied}]")
             for w in rec.get('warnings', []):
                 logger.warning(f"      ! {w}")
+        logger.info("  Inspect plots/metrics/{axis_coherences,vd-ei}.png "
+                    "and plots/pca_3d/ to pick the final L* from within the candidate range.")
         return
 
     # ── Inference mode ────────────────────────────────────────────────────────

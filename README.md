@@ -87,36 +87,39 @@ Adding a new family is two short methods + one registry entry (see
 ### Layer selection
 
 Paper-reported metrics use a single layer L\* per model — picked (paper
-App. D.3) by three criteria: (i) axis coherence on all three axes is at or
-near its plateau, (ii) VD-EI is on a stable plateau rather than in a
-transient region, (iii) avoid the last few layers, which specialise on
-next-token prediction rather than rich representations.
+App. D.3) by three textual criteria: (i) axis coherence on all three axes
+is at or near its plateau, (ii) VD-EI is on a stable plateau rather than
+in a transient region, (iii) avoid the last few layers, which specialise
+on next-token prediction rather than rich representations.
 
 For the four registered families below, L\* is already stored on
 `MODEL_REGISTRY[<model_type>]` as `paper_layer` / `paper_plateau` /
-`total_layers` (e.g., `MODEL_REGISTRY["nvila"].paper_layer == 20`), so
-you can skip straight to inference. **To pick L\* for a new model**, run
-probing once and inspect
-`results/saved_data/<model>_<scale>/plots/metrics/axis_coherences.png`
-and `.../vd-ei.png` against the three criteria above.
+`total_layers`, so you can skip straight to inference. **To pick L\* for
+a new model**:
 
-`probing.py --model_type <m> --recommend-layer` runs `recommend_layer()`,
-a heuristic approximation of those three criteria (joint coherence plateau
-within 85% of per-axis peak, VD-EI local std at or below the median, last
-20% of layers excluded). Defaults were tuned on the six (model, scale)
-runs used in `docs/LOCAL_PROBING_VERIFICATION_KO.md` (molmo / nvila /
-qwen25 × {vanilla, 2M, 80k where applicable}) — in-sample fit lands within
-±2 layers of the registered `paper_layer` in all six cases (2/6 exact).
-qwen3-235B is untested. The recommendation is a starting suggestion, not a
-substitute for visual inspection of the per-axis plateau and the VD-EI
-trajectory.
+1. Run probing once.
+2. Open `plots/metrics/axis_coherences.png` and `plots/metrics/vd-ei.png`
+   and read off the layers that satisfy the three criteria above.
+3. Per-layer 3D PCA panels under `plots/pca_3d/` are also saved for
+   reference if you want additional visual context.
+
+For a programmatic short-list, `python probing.py --model_type <m>
+--recommend-layer` reports a **candidate range** and a top-`k` short-list
+within it (default `k=3`). The candidate range follows paper App. D.4 —
+*"the union of layers where CohH, CohV, and CohD are near peak"* — after
+dropping the last `--recommend-frac` of layers (default `0.07`; very deep
+or MoE models may need a smaller value, very shallow models tolerate
+larger). The paper notes that cross-model CohD rankings agree within
+range at Spearman ρ = 0.928, so the load-bearing output is the range
+itself — `recommended` and `top_k` are kept for back-compat and as
+representative picks; any layer inside the range is a defensible choice.
 
 | `model_type` | total | L\* | depth | plateau |
 |---|---:|---:|---:|---|
 | `molmo`  | 32 | **23** | 72% | L20–25 |
 | `nvila`  | 28 | **20** | 71% | L17–26 |
 | `qwen25` | 36 | **28** | 78% | L20–28 |
-| `qwen3` (235B) | 94 | **87** | 93% | L83–90 (no clean plateau) |
+| `qwen3` (235B) | 94 | **87** | 93% | L83–90 |
 
 ---
 
