@@ -201,12 +201,27 @@ class ModelSpec:
         Leave empty if each checkpoint is self-contained.
     plot_color : str
         Hex colour string used for this model in cross-model comparison plots.
+    paper_layer : int, optional
+        The single layer index used for the model's headline Coh_H / Coh_V /
+        Coh_D / VD-EI numbers in the paper (Appendix D.1). Logged on extractor
+        load so downstream scripts don't need to re-derive it. None means we
+        haven't run the layer-selection sweep for this model.
+    paper_plateau : (int, int), optional
+        Inclusive (low, high) layer range over which coherence plateaus, per
+        Appendix D.1. ``paper_layer`` is typically inside this band.
+    total_layers : int, optional
+        Total number of transformer layers in the LM backbone — useful so
+        readers can see the relative depth (paper_layer / total_layers ≈ 71–93%
+        across released models).
     """
     extractor_class: Type[Any]
     checkpoints: Dict[str, str]
     display_name: str = ''
     base_processor_id: str = ''
     plot_color: str = _DEFAULT_SCALE_COLOR
+    paper_layer: Optional[int] = None
+    paper_plateau: Optional[Tuple[int, int]] = None
+    total_layers: Optional[int] = None
 
 
 # ── Central registry — add your model here ────────────────────────────────────
@@ -233,6 +248,9 @@ def register_model(
     display_name: str = '',
     base_processor_id: str = '',
     plot_color: str = _DEFAULT_SCALE_COLOR,
+    paper_layer: Optional[int] = None,
+    paper_plateau: Optional[Tuple[int, int]] = None,
+    total_layers: Optional[int] = None,
 ):
     """Class decorator that registers a VLM extractor in MODEL_REGISTRY.
 
@@ -243,6 +261,9 @@ def register_model(
         checkpoints  = {"base": "org/my-model-7b"},
         display_name = "My Model 7B",
         plot_color   = "#e377c2",
+        paper_layer  = 23,           # see Appendix D.1 — selected analysis layer
+        paper_plateau= (20, 25),     # plateau range coherence is stable over
+        total_layers = 32,
     )
     class MyModelExtractor(BaseHiddenStateExtractor):
         ...
@@ -254,6 +275,9 @@ def register_model(
             display_name     = display_name or model_type,
             base_processor_id= base_processor_id,
             plot_color       = plot_color,
+            paper_layer      = paper_layer,
+            paper_plateau    = paper_plateau,
+            total_layers     = total_layers,
         )
         return cls
     return decorator
@@ -679,6 +703,10 @@ MODEL_REGISTRY["qwen25"] = ModelSpec(
     display_name      = "Qwen2.5-VL",
     base_processor_id = "Qwen/Qwen2.5-VL-3B-Instruct",
     plot_color        = "#1f77b4",
+    # Appendix D.1: L*=28 (78% of 36); plateau L20–28.
+    paper_layer       = 28,
+    paper_plateau     = (20, 28),
+    total_layers      = 36,
 )
 
 MODEL_REGISTRY["qwen3"] = ModelSpec(
@@ -689,6 +717,12 @@ MODEL_REGISTRY["qwen3"] = ModelSpec(
     },
     display_name = "Qwen3-VL",
     plot_color   = "#bcbd22",
+    # Appendix D.1 reports L*=87 (93% of 94) for the 235B MoE variant; 32B not
+    # included in the layer-selection sweep. VD-EI oscillates in the upper
+    # layers without a clear plateau (see paper caveat).
+    paper_layer  = 87,
+    paper_plateau= (83, 90),
+    total_layers = 94,
 )
 
 MODEL_REGISTRY["molmo"] = ModelSpec(
@@ -698,6 +732,10 @@ MODEL_REGISTRY["molmo"] = ModelSpec(
     },
     display_name = "Molmo-7B",
     plot_color   = "#ff7f0e",
+    # Appendix D.1: L*=23 (72% of 32); plateau L20–25.
+    paper_layer  = 23,
+    paper_plateau= (20, 25),
+    total_layers = 32,
 )
 
 MODEL_REGISTRY["molmo2"] = ModelSpec(
@@ -707,6 +745,7 @@ MODEL_REGISTRY["molmo2"] = ModelSpec(
     },
     display_name = "Molmo2-8B",
     plot_color   = "#17becf",
+    # Not included in Appendix D.1 layer-selection sweep — pick after running.
 )
 
 MODEL_REGISTRY["nvila"] = ModelSpec(
@@ -721,6 +760,10 @@ MODEL_REGISTRY["nvila"] = ModelSpec(
     },
     display_name = "NVILA-Lite",
     plot_color   = "#2ca02c",
+    # Appendix D.1: L*=20 (71% of 28); plateau L17–26.
+    paper_layer  = 20,
+    paper_plateau= (17, 26),
+    total_layers = 28,
 )
 
 # ── Example merge config ──────────────────────────────────────────────────────
@@ -754,6 +797,15 @@ def get_extractor(
     model_path = resolve_model_path(raw_path)
     logger.info(f"Loading {model_type}/{scale} via {type(spec.extractor_class).__name__} "
                 f"from {model_path}")
+    if spec.paper_layer is not None:
+        plateau = (f" (plateau L{spec.paper_plateau[0]}–{spec.paper_plateau[1]})"
+                   if spec.paper_plateau else "")
+        total = f" of {spec.total_layers} layers" if spec.total_layers else ""
+        pct = (f", ~{round(100 * spec.paper_layer / spec.total_layers)}%"
+               if spec.total_layers else "")
+        logger.info(f"  Paper analysis layer for {spec.display_name}: "
+                    f"L{spec.paper_layer}{plateau}{total}{pct}. "
+                    f"See README §'Layer selection' or Appendix D.1.")
     return spec.extractor_class(
         model_path        = model_path,
         device            = device,

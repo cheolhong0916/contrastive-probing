@@ -84,6 +84,32 @@ Adding a new family is two short methods + one registry entry (see
 | `molmo2` | Molmo2-8B | `allenai/Molmo2-8B` |
 | `nvila` | NVILA / NVILA-Lite | `Efficient-Large-Model/NVILA-Lite-2B` |
 
+### Layer selection
+
+Axis coherence and VD-EI are reported in the paper at a single hand-picked
+layer per model — the layer where Coh_H / Coh_V / Coh_D plateau and the
+clustering structure on PCA looks cleanest (Appendix D.1). These layer
+indices are stored on `MODEL_REGISTRY[<model_type>]` as `paper_layer`,
+`paper_plateau`, `total_layers`, and are logged on every extractor load,
+so you don't need to look them up by hand.
+
+| `model_type` | total layers | `paper_layer` (L\*) | depth | plateau |
+|---|---:|---:|---:|---|
+| `molmo`  | 32 | **23** | 72% | L20–25 |
+| `nvila`  | 28 | **20** | 71% | L17–26 |
+| `qwen25` | 36 | **28** | 78% | L20–28 |
+| `qwen3` (235B) | 94 | **87** | 93% | L83–90 (VD-EI oscillates; no clean plateau — see Appendix D.1 caveat) |
+
+When you load an extractor, the value is echoed in the log:
+
+```
+Loading nvila/vanilla via ABCMeta from Efficient-Large-Model/NVILA-Lite-2B
+  Paper analysis layer for NVILA-Lite: L20 (plateau L17–26) of 28 layers, ~71%. See README §'Layer selection' or Appendix D.1.
+```
+
+For downstream analysis on the `.npz` artifacts (e.g. recomputing VD-EI),
+just read `delta_L{paper_layer}` from `vectors_<scale>.npz`.
+
 ---
 
 ## Installation
