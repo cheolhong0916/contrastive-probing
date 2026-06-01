@@ -797,15 +797,6 @@ def get_extractor(
     model_path = resolve_model_path(raw_path)
     logger.info(f"Loading {model_type}/{scale} via {type(spec.extractor_class).__name__} "
                 f"from {model_path}")
-    if spec.paper_layer is not None:
-        plateau = (f" (plateau L{spec.paper_plateau[0]}–{spec.paper_plateau[1]})"
-                   if spec.paper_plateau else "")
-        total = f" of {spec.total_layers} layers" if spec.total_layers else ""
-        pct = (f", ~{round(100 * spec.paper_layer / spec.total_layers)}%"
-               if spec.total_layers else "")
-        logger.info(f"  Paper analysis layer for {spec.display_name}: "
-                    f"L{spec.paper_layer}{plateau}{total}{pct}. "
-                    f"See README §'Layer selection' or Appendix D.1.")
     return spec.extractor_class(
         model_path        = model_path,
         device            = device,

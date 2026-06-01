@@ -86,26 +86,20 @@ Adding a new family is two short methods + one registry entry (see
 
 ### Layer selection
 
-Axis coherence and VD-EI are reported in the paper at a single hand-picked
-layer per model — the layer where Coh_H / Coh_V / Coh_D plateau and the
-clustering structure on PCA looks cleanest (Appendix D.1). These layer
-indices are stored on `MODEL_REGISTRY[<model_type>]` as `paper_layer`,
-`paper_plateau`, `total_layers`, and are logged on every extractor load,
-so you don't need to look them up by hand.
+Paper-reported metrics use a single layer L\* per model — picked by three
+criteria (paper App. D.3): (i) coherence on all three axes is at or near
+its plateau, (ii) VD-EI is on a stable plateau rather than in a transient
+region, (iii) avoid the last few layers, which specialise on next-token
+prediction rather than rich representations. Stored on
+`MODEL_REGISTRY[<model_type>]` as `paper_layer` / `paper_plateau` /
+`total_layers`.
 
-| `model_type` | total layers | `paper_layer` (L\*) | depth | plateau |
+| `model_type` | total | L\* | depth | plateau |
 |---|---:|---:|---:|---|
 | `molmo`  | 32 | **23** | 72% | L20–25 |
 | `nvila`  | 28 | **20** | 71% | L17–26 |
 | `qwen25` | 36 | **28** | 78% | L20–28 |
-| `qwen3` (235B) | 94 | **87** | 93% | L83–90 (VD-EI oscillates; no clean plateau — see Appendix D.1 caveat) |
-
-When you load an extractor, the value is echoed in the log:
-
-```
-Loading nvila/vanilla via ABCMeta from Efficient-Large-Model/NVILA-Lite-2B
-  Paper analysis layer for NVILA-Lite: L20 (plateau L17–26) of 28 layers, ~71%. See README §'Layer selection' or Appendix D.1.
-```
+| `qwen3` (235B) | 94 | **87** | 93% | L83–90 (no clean plateau) |
 
 For downstream analysis on the `.npz` artifacts (e.g. recomputing VD-EI),
 just read `delta_L{paper_layer}` from `vectors_<scale>.npz`.
