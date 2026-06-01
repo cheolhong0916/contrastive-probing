@@ -1321,6 +1321,119 @@ def rebuild_metrics_for_scale(scale_output_dir: str, model_type: str, scale: str
             os.path.join(metrics_dir, 'vd-ei.png'))
 
 
+def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
+                    vd_ei:    Dict[int, float],
+                    total_layers: Optional[int] = None,
+                    coh_tau: float = 0.85,
+                    vd_window: int = 3,
+                    exclude_last_frac: float = 0.20) -> dict:
+    """Programmatic L* recommendation following Appendix D.3.
+
+    Three criteria, applied as set intersections over the layer index:
+
+    1. **Joint coherence plateau.** For each axis group (horizontal, vertical,
+       distance) compute the per-axis peak coherence, then keep layers whose
+       coherence is at least ``coh_tau`` of that peak. The joint plateau is
+       the intersection across all three groups.
+    2. **VD-EI stability.** For each layer, take the std of VD-EI over a
+       window of ``±vd_window`` neighbouring layers. Keep layers whose local
+       std is at or below the median local std across all layers — these are
+       the "non-transient" regions.
+    3. **Avoid output-specialised final layers.** Drop the last
+       ``exclude_last_frac`` of the model's layers when ``total_layers`` is
+       known.
+
+    Recommendation = layer in (1) ∩ (2) ∩ (3) that maximises the *minimum*
+    normalised axis coherence (i.e. the layer where every axis is closest to
+    its peak). Ties broken by preferring deeper layers, consistent with the
+    paper's tendency to pick the upper end of the plateau. When no layer
+    survives the strictest intersection, the picker relaxes criterion (2),
+    then (1). This is a heuristic starting suggestion — the paper's per-model
+    picks also incorporate visual PCA inspection that this function cannot
+    replicate. See `docs/LOCAL_PROBING_VERIFICATION_KO.md` for an empirical
+    comparison against the four registered L* values.
+
+    Returns a dict with the chosen layer plus per-criterion candidate sets so
+    callers can inspect why a layer made (or missed) the cut.
+    """
+    coh_by_group: Dict[str, Dict[int, float]] = {g: {} for g in GROUP_ORDER}
+    for (g, L), v in axis_coh.items():
+        coh_by_group[g][L] = v['mean']
+
+    layers_with_coh = set()
+    for g in GROUP_ORDER:
+        layers_with_coh.update(coh_by_group[g].keys())
+    all_layers = sorted(layers_with_coh & set(vd_ei.keys()))
+    if not all_layers:
+        return {'recommended': None, 'reason': 'no overlapping layers'}
+
+    # (1) per-axis plateau and joint intersection
+    per_group_plateau: Dict[str, set] = {}
+    for g in GROUP_ORDER:
+        d = coh_by_group[g]
+        if not d:
+            per_group_plateau[g] = set(all_layers)
+            continue
+        peak = max(d.values())
+        if peak <= 0:
+            per_group_plateau[g] = set(all_layers)
+        else:
+            per_group_plateau[g] = {L for L, v in d.items() if v >= peak * coh_tau}
+    joint_plateau = set(all_layers)
+    for g in GROUP_ORDER:
+        joint_plateau &= per_group_plateau[g]
+
+    # (2) VD-EI local stability
+    vd_layers = sorted(vd_ei.keys())
+    vd_arr = np.array([vd_ei[L] for L in vd_layers])
+    local_std = []
+    for i in range(len(vd_layers)):
+        lo, hi = max(0, i - vd_window), min(len(vd_arr), i + vd_window + 1)
+        local_std.append(float(np.std(vd_arr[lo:hi])))
+    stab_thresh = float(np.median(local_std))
+    vd_stable = {L for L, s in zip(vd_layers, local_std) if s <= stab_thresh}
+
+    # (3) cutoff late layers
+    cutoff = None
+    if total_layers is not None and total_layers > 0:
+        cutoff = int(round(total_layers * (1 - exclude_last_frac)))
+        not_late = {L for L in all_layers if L <= cutoff}
+    else:
+        not_late = set(all_layers)
+
+    candidates = joint_plateau & vd_stable & not_late
+    fallback = False
+    if not candidates:
+        candidates = joint_plateau & not_late
+        fallback = bool(candidates)
+        if not candidates:
+            candidates = set(not_late) or set(all_layers)
+            fallback = True
+
+    def score(L: int) -> Tuple[float, int]:
+        # primary: how close are *all three* axes to their per-axis peak;
+        # tiebreak: prefer the deeper layer (matches paper's plateau-upper-end pick).
+        min_norm = 1.0
+        for g in GROUP_ORDER:
+            if not coh_by_group[g]:
+                continue
+            peak = max(coh_by_group[g].values())
+            if peak <= 0:
+                continue
+            min_norm = min(min_norm, coh_by_group[g].get(L, 0.0) / peak)
+        return (min_norm, L)
+
+    recommended = max(candidates, key=score) if candidates else None
+    return {
+        'recommended': recommended,
+        'joint_plateau': sorted(joint_plateau),
+        'vd_stable': sorted(vd_stable),
+        'cutoff_layer': cutoff,
+        'per_group_plateau': {g: sorted(per_group_plateau[g]) for g in GROUP_ORDER},
+        'fallback_used': fallback,
+    }
+
+
 def plot_pca_embeddings(vectors_npz_path, scale, model_type, save_dir):
     data = np.load(vectors_npz_path, allow_pickle=True)
     layers = sorted(int(k.replace('orig_L', '')) for k in data.files if k.startswith('orig_L'))
@@ -1624,6 +1737,11 @@ Examples:
                              'Iterates over scales from MODEL_REGISTRY (or --scales) only; '
                              'on-disk dirs not in the registry are not auto-discovered — '
                              'pass them via --scales explicitly.')
+    parser.add_argument('--recommend-layer', action='store_true', dest='recommend_layer_flag',
+                        help='Skip inference; print the systematic L* recommendation from '
+                             '`recommend_layer` (App. D.3 criteria — joint coherence plateau, '
+                             'VD-EI stability, exclude last 20%% of layers) for every saved '
+                             'scale and compare against MODEL_REGISTRY[...].paper_layer.')
     parser.add_argument('--merge-output-dir', type=str, default=None, dest='merge_output_dir',
                         help='Override the output directory for cross-scale plots.')
     parser.add_argument('--group-name', type=str, default=None, dest='group_name',
@@ -1681,6 +1799,42 @@ Examples:
                 continue
             logger.info(f"  Rebuilding metrics for {args.model_type}/{scale}")
             rebuild_metrics_for_scale(sd, args.model_type, scale)
+        return
+
+    # ── Recommend-layer mode ──────────────────────────────────────────────────
+    if args.recommend_layer_flag:
+        log_path = _setup_file_logging(args.model_type + "_recommend", log_dir)
+        logger.info(f"Logging to: {log_path}")
+        logger.info("\n=== RECOMMEND-LAYER MODE ===")
+        spec = MODEL_REGISTRY.get(args.model_type)
+        scales = args.scales or (list(spec.checkpoints.keys()) if spec else [])
+        paper_L = spec.paper_layer if spec else None
+        total = spec.total_layers if spec else None
+        logger.info(f"  Paper-registered L* for {args.model_type}: "
+                    f"{('L'+str(paper_L)) if paper_L is not None else '(not set)'}  "
+                    f"(total_layers={total})")
+        for scale in scales:
+            sd = os.path.join(args.output_dir, _model_key(args.model_type, scale))
+            if not os.path.isdir(sd):
+                logger.warning(f"  {sd} not found, skipping.")
+                continue
+            coh = load_axis_coherence(sd, scale)
+            vd  = load_vd_ei(sd, scale)
+            if not vd:
+                # backfill from npz if user hasn't rebuilt yet
+                vd = compute_vd_ei_per_layer_from_npz(
+                    os.path.join(sd, 'npz', f'vectors_{scale}.npz'))
+            if not coh or not vd:
+                logger.warning(f"  {scale}: missing axis_coh or vd_ei, skipping.")
+                continue
+            rec = recommend_layer(coh, vd, total_layers=total)
+            L = rec['recommended']
+            jp = rec['joint_plateau']
+            jp_str = f"L{jp[0]}-L{jp[-1]}" if jp else "(empty → fallback)"
+            delta = f"  Δ{L - paper_L:+d}" if (L is not None and paper_L is not None) else ""
+            logger.info(f"  {scale:<10s}  recommended L*={'L'+str(L) if L is not None else '?'}"
+                        f"{delta}   joint plateau={jp_str}   "
+                        f"fallback={rec['fallback_used']}")
         return
 
     # ── Inference mode ────────────────────────────────────────────────────────

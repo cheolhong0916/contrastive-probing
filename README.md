@@ -100,6 +100,14 @@ probing once and inspect
 `results/saved_data/<model>_<scale>/plots/metrics/axis_coherences.png`
 and `.../vd-ei.png` against the three criteria above.
 
+`probing.py --model_type <m> --recommend-layer` operationalises the three
+criteria and prints a systematic suggestion (joint coherence plateau within
+85% of per-axis peak, VD-EI local stability below median, exclude last 20%
+of layers). On the four registered models it lands within ±2 layers of the
+paper's hand picks (2/6 exact across vanilla / 80k / 2M runs), which is
+useful as a starting suggestion — but visual inspection still wins for the
+final call.
+
 | `model_type` | total | L\* | depth | plateau |
 |---|---:|---:|---:|---|
 | `molmo`  | 32 | **23** | 72% | L20–25 |
