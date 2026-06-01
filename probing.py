@@ -1045,6 +1045,78 @@ def compute_delta_similarity_matrix(records: List[dict], layer: int) -> Optional
     return pd.DataFrame(sim, index=available, columns=available)
 
 
+def compute_vd_ei_per_layer(records: List[dict], target_layers: List[int]) -> Dict[int, float]:
+    """Per-layer VD-Entanglement Index.
+
+    For each layer, compute cosine(mean_delta_vertical, mean_delta_distance)
+    after sign-correcting each group's deltas onto its canonical direction
+    (e.g. flip Δ for samples whose category is `below` so they align with the
+    canonical `above` direction before averaging). Without this flip the group
+    mean cancels to ~0 and the cosine becomes meaningless noise.
+
+    Reference implementation: rb/R3_M3_refspatial_rgb_finetune/watch_400k.sh
+        d[c == opp] = -d[c == opp]      # sign-correct
+        means[grp]  = d.mean(axis=0)
+        vdei        = dot(mv, md) / (||mv|| * ||md||)
+
+    Returns a {layer_idx: vdei} dict; layers missing either group are skipped.
+    """
+    out: Dict[int, float] = {}
+    for layer in target_layers:
+        means = {}
+        for group in ('vertical', 'distance'):
+            canon = CANONICAL_CATEGORIES[group]
+            opp   = OPPOSITE_MAP[canon]
+            deltas = []
+            for r in records:
+                if r['group'] != group or layer not in r['delta']:
+                    continue
+                d = r['delta'][layer]
+                if r['category'] == opp:
+                    d = -d
+                deltas.append(d)
+            if deltas:
+                means[group] = np.mean(deltas, axis=0)
+        if 'vertical' in means and 'distance' in means:
+            v, d = means['vertical'], means['distance']
+            denom = (np.linalg.norm(v) * np.linalg.norm(d) + 1e-12)
+            out[layer] = float(np.dot(v, d) / denom)
+    return out
+
+
+def compute_vd_ei_per_layer_from_npz(npz_path: str) -> Dict[int, float]:
+    """Same as ``compute_vd_ei_per_layer`` but reads delta vectors directly from
+    a saved ``vectors_<scale>.npz``. Lets ``--rebuild-metrics`` regenerate plots
+    from existing artifacts without redoing inference."""
+    if not os.path.exists(npz_path):
+        return {}
+    data = np.load(npz_path, allow_pickle=True)
+    layers = sorted({int(k.split('_L')[1]) for k in data.files if k.startswith('delta_L')})
+    out: Dict[int, float] = {}
+    for L in layers:
+        dkey, ckey, gkey = f'delta_L{L}', f'categories_L{L}', f'groups_L{L}'
+        if not (dkey in data.files and ckey in data.files and gkey in data.files):
+            continue
+        delta = data[dkey].astype(np.float32)
+        cats  = data[ckey]
+        grps  = data[gkey]
+        means = {}
+        for group in ('vertical', 'distance'):
+            canon = CANONICAL_CATEGORIES[group]
+            opp   = OPPOSITE_MAP[canon]
+            mask  = (grps == group)
+            d = delta[mask].copy()
+            c = cats[mask]
+            d[c == opp] = -d[c == opp]
+            if len(d):
+                means[group] = d.mean(axis=0)
+        if 'vertical' in means and 'distance' in means:
+            v, d = means['vertical'], means['distance']
+            denom = (np.linalg.norm(v) * np.linalg.norm(d) + 1e-12)
+            out[L] = float(np.dot(v, d) / denom)
+    return out
+
+
 
 
 # ============================================================================
@@ -1105,6 +1177,21 @@ def load_axis_coherence(output_dir, scale):
         raw = json.load(f)
     return {(p[0], int(p[1])): vals for key, vals in raw.items()
             for p in [key.rsplit('_L', 1)] if len(p) == 2}
+
+
+def load_vd_ei(output_dir, scale):
+    path = os.path.join(output_dir, 'json', f'vd_ei_{scale}.json')
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return {int(k): float(v) for k, v in json.load(f).items()}
+
+
+def save_vd_ei(output_dir, scale, vd_ei: Dict[int, float]):
+    json_dir = os.path.join(output_dir, 'json')
+    os.makedirs(json_dir, exist_ok=True)
+    with open(os.path.join(json_dir, f'vd_ei_{scale}.json'), 'w') as f:
+        json.dump({str(k): float(v) for k, v in sorted(vd_ei.items())}, f, indent=2)
 
 
 def load_delta_heatmaps(output_dir, scale):
@@ -1175,6 +1262,63 @@ def plot_cross_scale_axis_coherence(all_consistency, model_type, save_path, titl
                  fontsize=15, fontweight='bold', y=1.02)
     plt.tight_layout(); plt.savefig(save_path, dpi=300, bbox_inches='tight'); plt.close()
     logger.info(f"Saved: {save_path}")
+
+
+def plot_vd_ei_trajectory(vd_ei: Dict[int, float], scale, model_type, save_path):
+    """Per-layer VD-EI trajectory for one (model, scale)."""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    pairs = sorted(vd_ei.items())
+    if pairs:
+        layers, vals = zip(*pairs)
+        ax.plot(layers, vals, '-o', color='#7f0000', linewidth=2, markersize=3, label='VD-EI')
+    ax.axhline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.5)
+    ax.set_xlabel('Layer Index'); ax.set_ylabel('VD-EI')
+    ax.set_title(f'{model_type} ({scale}) – VD-Entanglement Index', fontweight='bold')
+    ax.legend(fontsize=11); ax.grid(True, alpha=0.3)
+    plt.tight_layout(); plt.savefig(save_path, dpi=300, bbox_inches='tight'); plt.close()
+    logger.info(f"Saved: {save_path}")
+
+
+def plot_cross_scale_vd_ei(all_vd_ei, model_type, save_path):
+    """VD-EI trajectories overlaid across scales for one model."""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for scale, vd_ei in all_vd_ei.items():
+        pairs = sorted(vd_ei.items())
+        if pairs:
+            ls, vs = zip(*pairs)
+            ax.plot(ls, vs, '-', color=SCALE_COLORS.get(scale, _DEFAULT_SCALE_COLOR),
+                    label=_scale_display('', scale), linewidth=2)
+    ax.axhline(0, color='gray', linewidth=0.8, linestyle='--', alpha=0.5)
+    ax.set_xlabel('Layer Index'); ax.set_ylabel('VD-EI')
+    ax.set_title(f'{model_type} – VD-Entanglement Index Across Scales',
+                 fontsize=15, fontweight='bold')
+    ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+    plt.tight_layout(); plt.savefig(save_path, dpi=300, bbox_inches='tight'); plt.close()
+    logger.info(f"Saved: {save_path}")
+
+
+def rebuild_metrics_for_scale(scale_output_dir: str, model_type: str, scale: str,
+                              axis_coh=None, vd_ei=None):
+    """Regenerate plots/metrics/{axis_coherences,vd-ei}.png + json/vd_ei_<scale>.json
+    for one saved scale directory. If ``axis_coh`` / ``vd_ei`` are not passed,
+    they are loaded (axis coherence) / recomputed from npz (VD-EI)."""
+    npz_path = os.path.join(scale_output_dir, 'npz', f'vectors_{scale}.npz')
+    metrics_dir = os.path.join(scale_output_dir, 'plots', 'metrics')
+    os.makedirs(metrics_dir, exist_ok=True)
+    if axis_coh is None:
+        axis_coh = load_axis_coherence(scale_output_dir, scale)
+    if vd_ei is None:
+        vd_ei = compute_vd_ei_per_layer_from_npz(npz_path)
+    if vd_ei:
+        save_vd_ei(scale_output_dir, scale, vd_ei)
+    if axis_coh:
+        plot_axis_coherence_trajectory(
+            axis_coh, scale, model_type,
+            os.path.join(metrics_dir, 'axis_coherences.png'))
+    if vd_ei:
+        plot_vd_ei_trajectory(
+            vd_ei, scale, model_type,
+            os.path.join(metrics_dir, 'vd-ei.png'))
 
 
 def plot_pca_embeddings(vectors_npz_path, scale, model_type, save_dir):
@@ -1333,6 +1477,7 @@ def process_scale(args, model_type: str, scale: str, swap_pairs: List[dict]):
     # ── Analysis ──────────────────────────────────────────────────────────────
     logger.info("\n--- Analysis ---")
     axis_coh = compute_axis_coherence(swap_records, target_layers)
+    vd_ei    = compute_vd_ei_per_layer(swap_records, target_layers)
     delta_heatmaps = {layer: compute_delta_similarity_matrix(swap_records, layer)
                       for layer in target_layers}
 
@@ -1341,19 +1486,19 @@ def process_scale(args, model_type: str, scale: str, swap_pairs: List[dict]):
         if (group, max_layer) in axis_coh:
             v = axis_coh[(group, max_layer)]
             logger.info(f"  axis coherence [{group}, L{max_layer}]: {v['mean']:.4f} ± {v['std']:.4f}")
+    if max_layer in vd_ei:
+        logger.info(f"  VD-EI [L{max_layer}]: {vd_ei[max_layer]:+.4f}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     logger.info("\n--- Saving ---")
     save_vectors_npz(scale, swap_records, target_layers, output_dir)
     save_scale_results(scale, swap_records, axis_coh, delta_heatmaps, output_dir)
+    save_vd_ei(output_dir, scale, vd_ei)
 
     # ── Plots ─────────────────────────────────────────────────────────────────
     logger.info("\n--- Plots ---")
-    coh_dir = os.path.join(plots_dir, 'axis_coherence')
-    os.makedirs(coh_dir, exist_ok=True)
-    plot_axis_coherence_trajectory(
-        axis_coh, scale, model_type,
-        os.path.join(coh_dir, f'axis_coherence_{scale}.png'))
+    rebuild_metrics_for_scale(output_dir, model_type, scale,
+                              axis_coh=axis_coh, vd_ei=vd_ei)
     npz_path = os.path.join(output_dir, 'npz', f'vectors_{scale}.npz')
     if os.path.exists(npz_path):
         run_all_layer_pca(output_dir, model_type, [scale])
@@ -1394,22 +1539,34 @@ def run_merge(args, model_type: str):
         src = scale_src.get(scale, model_type)
         return _scale_dir(args.output_dir, src, scale)
 
-    all_coh = {}; all_dh = {}
+    all_coh = {}; all_dh = {}; all_vdei = {}
 
     for scale in available_scales:
         sd  = _sd(scale)
         coh = load_axis_coherence(sd, scale)
         dh  = load_delta_heatmaps(sd, scale)
-        if coh: all_coh[scale] = coh
-        if dh:  all_dh[scale]  = dh
+        vd  = load_vd_ei(sd, scale)
+        if not vd:
+            # Fallback: recompute from npz so older saved_data still merges.
+            vd = compute_vd_ei_per_layer_from_npz(
+                os.path.join(sd, 'npz', f'vectors_{scale}.npz'))
+            if vd:
+                save_vd_ei(sd, scale, vd)
+        if coh: all_coh[scale]   = coh
+        if dh:  all_dh[scale]    = dh
+        if vd:  all_vdei[scale]  = vd
         logger.info(f"  Loaded data for '{scale}'")
 
-    coh_dir = os.path.join(plots_dir, 'axis_coherence')
-    os.makedirs(coh_dir, exist_ok=True)
+    metrics_dir = os.path.join(plots_dir, 'metrics')
+    os.makedirs(metrics_dir, exist_ok=True)
     if len(all_coh) > 1:
         plot_cross_scale_axis_coherence(
             all_coh, model_type,
-            os.path.join(coh_dir, 'cross_scale.png'))
+            os.path.join(metrics_dir, 'axis_coherences.png'))
+    if len(all_vdei) > 1:
+        plot_cross_scale_vd_ei(
+            all_vdei, model_type,
+            os.path.join(metrics_dir, 'vd-ei.png'))
 
     logger.info(f"\n=== Merge complete. Results in: {merge_out} ===")
 
@@ -1460,6 +1617,13 @@ Examples:
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--merge', action='store_true',
                         help='Merge mode: generate cross-scale plots from saved data.')
+    parser.add_argument('--rebuild-metrics', action='store_true', dest='rebuild_metrics',
+                        help='Skip inference; recompute VD-EI from saved npz and regenerate '
+                             'plots/metrics/{axis_coherences,vd-ei}.png plus '
+                             'json/vd_ei_<scale>.json for every requested scale. '
+                             'Iterates over scales from MODEL_REGISTRY (or --scales) only; '
+                             'on-disk dirs not in the registry are not auto-discovered — '
+                             'pass them via --scales explicitly.')
     parser.add_argument('--merge-output-dir', type=str, default=None, dest='merge_output_dir',
                         help='Override the output directory for cross-scale plots.')
     parser.add_argument('--group-name', type=str, default=None, dest='group_name',
@@ -1501,6 +1665,22 @@ Examples:
         logger.info(f"Logging to: {log_path}")
         logger.info("\n=== MERGE MODE ===")
         run_merge(args, args.model_type)
+        return
+
+    # ── Rebuild-metrics mode ──────────────────────────────────────────────────
+    if args.rebuild_metrics:
+        log_path = _setup_file_logging(args.model_type + "_rebuild", log_dir)
+        logger.info(f"Logging to: {log_path}")
+        logger.info("\n=== REBUILD-METRICS MODE ===")
+        spec = MODEL_REGISTRY.get(args.model_type)
+        scales = args.scales or (list(spec.checkpoints.keys()) if spec else [])
+        for scale in scales:
+            sd = os.path.join(args.output_dir, _model_key(args.model_type, scale))
+            if not os.path.isdir(sd):
+                logger.warning(f"  {sd} not found, skipping.")
+                continue
+            logger.info(f"  Rebuilding metrics for {args.model_type}/{scale}")
+            rebuild_metrics_for_scale(sd, args.model_type, scale)
         return
 
     # ── Inference mode ────────────────────────────────────────────────────────

@@ -86,13 +86,19 @@ Adding a new family is two short methods + one registry entry (see
 
 ### Layer selection
 
-Paper-reported metrics use a single layer L\* per model — picked by three
-criteria (paper App. D.3): (i) coherence on all three axes is at or near
-its plateau, (ii) VD-EI is on a stable plateau rather than in a transient
-region, (iii) avoid the last few layers, which specialise on next-token
-prediction rather than rich representations. Stored on
+Paper-reported metrics use a single layer L\* per model — picked (paper
+App. D.3) by three criteria: (i) axis coherence on all three axes is at or
+near its plateau, (ii) VD-EI is on a stable plateau rather than in a
+transient region, (iii) avoid the last few layers, which specialise on
+next-token prediction rather than rich representations.
+
+For the four registered families below, L\* is already stored on
 `MODEL_REGISTRY[<model_type>]` as `paper_layer` / `paper_plateau` /
-`total_layers`.
+`total_layers` (e.g., `MODEL_REGISTRY["nvila"].paper_layer == 20`), so
+you can skip straight to inference. **To pick L\* for a new model**, run
+probing once and inspect
+`results/saved_data/<model>_<scale>/plots/metrics/axis_coherences.png`
+and `.../vd-ei.png` against the three criteria above.
 
 | `model_type` | total | L\* | depth | plateau |
 |---|---:|---:|---:|---|
@@ -101,15 +107,12 @@ prediction rather than rich representations. Stored on
 | `qwen25` | 36 | **28** | 78% | L20–28 |
 | `qwen3` (235B) | 94 | **87** | 93% | L83–90 (no clean plateau) |
 
-For downstream analysis on the `.npz` artifacts (e.g. recomputing VD-EI),
-just read `delta_L{paper_layer}` from `vectors_<scale>.npz`.
-
 ---
 
 ## Installation
 
 The framework needs only the standard scientific Python stack plus
-🤗 `transformers`. Per-model dependencies (e.g. `qwen-vl-utils`) are imported
+🤗 `transformers`. Per-model dependencies (e.g., `qwen-vl-utils`) are imported
 lazily — you only need the ones for the models you actually probe.
 
 Minimal install:
@@ -210,7 +213,7 @@ python probing.py --model_type qwen25 --merge
 ### 3. Multi-GPU shell wrappers
 
 Helper scripts in [scripts/](scripts/) launch all scales of one family in
-parallel on assigned GPUs, e.g. `scripts/run_qwen.sh`.
+parallel on assigned GPUs, e.g., `scripts/run_qwen.sh`.
 
 ---
 
@@ -223,18 +226,26 @@ results/
       npz/  vectors_vanilla.npz                 # raw embeddings + Δ vectors per layer
       csv/  delta_similarity_vanilla_L<k>.csv   # 6×6 matrices, one per layer
       json/ axis_coherence_vanilla.json         # mean / std / n per (group, layer)
+            vd_ei_vanilla.json                  # VD-Entanglement Index per layer
       plots/
-        axis_coherence/...
+        metrics/axis_coherences.png             # axis coherence trajectory (all groups)
+        metrics/vd-ei.png                       # VD-EI trajectory
         heatmap/...
         pca/...
         pca_3d/...
-  compare/<group>/plots/axis_coherence/cross_scale.png
+  compare/<group>/plots/metrics/axis_coherences.png
+  compare/<group>/plots/metrics/vd-ei.png
   logs/<model>_<scale>.log
 ```
 
 The `.npz` files are the canonical artefact — every downstream analysis
 (VD-EI, custom probes, alternative dimensionality reductions, etc.) can be
-built directly from them.
+built directly from them. If you upgrade the script after running probing,
+re-render the new `plots/metrics/` files in place with:
+
+```bash
+python probing.py --model_type qwen25 --rebuild-metrics
+```
 
 ---
 
