@@ -1327,18 +1327,25 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
                     coh_tau: float = 0.85,
                     vd_window: int = 3,
                     exclude_last_frac: float = 0.20) -> dict:
-    """Programmatic L* recommendation following Appendix D.3.
+    """Heuristic approximation of Appendix D.3's textual layer-selection
+    criteria. **Not a reproduction of the paper's per-model selection
+    process** — paper picks also incorporate visual PCA inspection and
+    per-model qualitative reasoning that this function cannot replicate.
+    Treat the output as a starting suggestion, then verify against the
+    saved `plots/metrics/{axis_coherences,vd-ei}.png`.
 
-    Three criteria, applied as set intersections over the layer index:
+    Three filters, intersected:
 
     1. **Joint coherence plateau.** For each axis group (horizontal, vertical,
        distance) compute the per-axis peak coherence, then keep layers whose
        coherence is at least ``coh_tau`` of that peak. The joint plateau is
        the intersection across all three groups.
-    2. **VD-EI stability.** For each layer, take the std of VD-EI over a
-       window of ``±vd_window`` neighbouring layers. Keep layers whose local
-       std is at or below the median local std across all layers — these are
-       the "non-transient" regions.
+    2. **VD-EI more stable than the median layer.** For each layer take the
+       std of VD-EI over a window of ``±vd_window`` neighbouring layers, then
+       keep layers whose local std is at or below the median local std across
+       all layers. This is a *relative* filter — by construction it always
+       keeps roughly the bottom-50% noisiest layers, so it ranks rather than
+       certifies "true plateau".
     3. **Avoid output-specialised final layers.** Drop the last
        ``exclude_last_frac`` of the model's layers when ``total_layers`` is
        known.
@@ -1348,24 +1355,37 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
     its peak). Ties broken by preferring deeper layers, consistent with the
     paper's tendency to pick the upper end of the plateau. When no layer
     survives the strictest intersection, the picker relaxes criterion (2),
-    then (1). This is a heuristic starting suggestion — the paper's per-model
-    picks also incorporate visual PCA inspection that this function cannot
-    replicate. See `docs/LOCAL_PROBING_VERIFICATION_KO.md` for an empirical
-    comparison against the four registered L* values.
+    then (1) — `criteria_applied` in the return dict records which filters
+    actually narrowed the candidate set, and `warnings` flags relaxations.
 
-    Returns a dict with the chosen layer plus per-criterion candidate sets so
-    callers can inspect why a layer made (or missed) the cut.
+    Reference implementation: see `compute_vd_ei_per_layer` for the VD-EI
+    definition; see `docs/LOCAL_PROBING_VERIFICATION_KO.md` for empirical
+    Δ-from-paper-L\\* numbers on the registered models.
+
+    Returns a dict:
+      'recommended':        L* (int) or None
+      'criteria_applied':   list of filter names that were used to narrow
+                            the candidates ('joint_plateau',
+                            'vd_more_stable_than_median', 'not_late')
+      'warnings':           list of human-readable issues (e.g. empty
+                            joint plateau, fallback triggered)
+      'joint_plateau':      sorted layers passing criterion (1)
+      'vd_more_stable_than_median': sorted layers passing criterion (2)
+      'cutoff_layer':       last layer kept by criterion (3), or None
+      'per_group_plateau':  {group: [layers]} for inspection
     """
     coh_by_group: Dict[str, Dict[int, float]] = {g: {} for g in GROUP_ORDER}
     for (g, L), v in axis_coh.items():
         coh_by_group[g][L] = v['mean']
 
+    warnings: List[str] = []
     layers_with_coh = set()
     for g in GROUP_ORDER:
         layers_with_coh.update(coh_by_group[g].keys())
     all_layers = sorted(layers_with_coh & set(vd_ei.keys()))
     if not all_layers:
-        return {'recommended': None, 'reason': 'no overlapping layers'}
+        return {'recommended': None, 'criteria_applied': [],
+                'warnings': ['no overlapping layers between axis_coh and vd_ei']}
 
     # (1) per-axis plateau and joint intersection
     per_group_plateau: Dict[str, set] = {}
@@ -1373,17 +1393,19 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
         d = coh_by_group[g]
         if not d:
             per_group_plateau[g] = set(all_layers)
+            warnings.append(f"axis '{g}' has no coherence data; treated as no constraint")
             continue
         peak = max(d.values())
         if peak <= 0:
             per_group_plateau[g] = set(all_layers)
+            warnings.append(f"axis '{g}' peak coherence <= 0; treated as no constraint")
         else:
             per_group_plateau[g] = {L for L, v in d.items() if v >= peak * coh_tau}
     joint_plateau = set(all_layers)
     for g in GROUP_ORDER:
         joint_plateau &= per_group_plateau[g]
 
-    # (2) VD-EI local stability
+    # (2) VD-EI local stability (relative — by construction ~50% of layers pass)
     vd_layers = sorted(vd_ei.keys())
     vd_arr = np.array([vd_ei[L] for L in vd_layers])
     local_std = []
@@ -1391,7 +1413,7 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
         lo, hi = max(0, i - vd_window), min(len(vd_arr), i + vd_window + 1)
         local_std.append(float(np.std(vd_arr[lo:hi])))
     stab_thresh = float(np.median(local_std))
-    vd_stable = {L for L, s in zip(vd_layers, local_std) if s <= stab_thresh}
+    vd_more_stable_than_median = {L for L, s in zip(vd_layers, local_std) if s <= stab_thresh}
 
     # (3) cutoff late layers
     cutoff = None
@@ -1400,15 +1422,31 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
         not_late = {L for L in all_layers if L <= cutoff}
     else:
         not_late = set(all_layers)
+        warnings.append("total_layers not provided; criterion 3 (avoid final layers) skipped")
 
-    candidates = joint_plateau & vd_stable & not_late
-    fallback = False
+    # Try strictest intersection first, then relax.
+    criteria_applied = ['joint_plateau', 'vd_more_stable_than_median', 'not_late']
+    candidates = joint_plateau & vd_more_stable_than_median & not_late
     if not candidates:
+        criteria_applied = ['joint_plateau', 'not_late']
         candidates = joint_plateau & not_late
-        fallback = bool(candidates)
+        warnings.append(
+            "relaxed criterion 2 (vd_more_stable_than_median) — strict intersection was empty"
+        )
         if not candidates:
+            criteria_applied = ['not_late']
             candidates = set(not_late) or set(all_layers)
-            fallback = True
+            if not joint_plateau:
+                warnings.append(
+                    "relaxed criterion 1 (joint_plateau) — no layer satisfies all 3 axis plateaus "
+                    "simultaneously, so the pick reflects only depth + min-coherence ranking"
+                )
+            else:
+                warnings.append("relaxed criterion 1 (joint_plateau) — strict intersection was empty")
+            if not candidates:
+                criteria_applied = []
+                candidates = set(all_layers)
+                warnings.append("relaxed all criteria — falling back to entire layer range")
 
     def score(L: int) -> Tuple[float, int]:
         # primary: how close are *all three* axes to their per-axis peak;
@@ -1426,11 +1464,12 @@ def recommend_layer(axis_coh: Dict[Tuple[str, int], dict],
     recommended = max(candidates, key=score) if candidates else None
     return {
         'recommended': recommended,
+        'criteria_applied': criteria_applied,
+        'warnings': warnings,
         'joint_plateau': sorted(joint_plateau),
-        'vd_stable': sorted(vd_stable),
+        'vd_more_stable_than_median': sorted(vd_more_stable_than_median),
         'cutoff_layer': cutoff,
         'per_group_plateau': {g: sorted(per_group_plateau[g]) for g in GROUP_ORDER},
-        'fallback_used': fallback,
     }
 
 
@@ -1830,11 +1869,14 @@ Examples:
             rec = recommend_layer(coh, vd, total_layers=total)
             L = rec['recommended']
             jp = rec['joint_plateau']
-            jp_str = f"L{jp[0]}-L{jp[-1]}" if jp else "(empty → fallback)"
+            jp_str = f"L{jp[0]}-L{jp[-1]}" if jp else "(empty)"
             delta = f"  Δ{L - paper_L:+d}" if (L is not None and paper_L is not None) else ""
+            applied = ",".join(rec['criteria_applied']) or "(none)"
             logger.info(f"  {scale:<10s}  recommended L*={'L'+str(L) if L is not None else '?'}"
                         f"{delta}   joint plateau={jp_str}   "
-                        f"fallback={rec['fallback_used']}")
+                        f"criteria_applied=[{applied}]")
+            for w in rec.get('warnings', []):
+                logger.warning(f"      ! {w}")
         return
 
     # ── Inference mode ────────────────────────────────────────────────────────

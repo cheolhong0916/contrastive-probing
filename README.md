@@ -100,13 +100,16 @@ probing once and inspect
 `results/saved_data/<model>_<scale>/plots/metrics/axis_coherences.png`
 and `.../vd-ei.png` against the three criteria above.
 
-`probing.py --model_type <m> --recommend-layer` operationalises the three
-criteria and prints a systematic suggestion (joint coherence plateau within
-85% of per-axis peak, VD-EI local stability below median, exclude last 20%
-of layers). On the four registered models it lands within ±2 layers of the
-paper's hand picks (2/6 exact across vanilla / 80k / 2M runs), which is
-useful as a starting suggestion — but visual inspection still wins for the
-final call.
+`probing.py --model_type <m> --recommend-layer` runs `recommend_layer()`,
+a heuristic approximation of those three criteria (joint coherence plateau
+within 85% of per-axis peak, VD-EI local std at or below the median, last
+20% of layers excluded). Defaults were tuned on the six (model, scale)
+runs used in `docs/LOCAL_PROBING_VERIFICATION_KO.md` (molmo / nvila /
+qwen25 × {vanilla, 2M, 80k where applicable}) — in-sample fit lands within
+±2 layers of the registered `paper_layer` in all six cases (2/6 exact).
+qwen3-235B is untested. The recommendation is a starting suggestion, not a
+substitute for visual inspection of the per-axis plateau and the VD-EI
+trajectory.
 
 | `model_type` | total | L\* | depth | plateau |
 |---|---:|---:|---:|---|
