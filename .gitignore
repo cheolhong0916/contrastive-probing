@@ -6,6 +6,7 @@
 
 # Allow the published code + docs + shell wrappers
 !README.md
+!LICENSE
 !probing.py
 !scripts/
 !scripts/*.sh
