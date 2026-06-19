@@ -1,5 +1,6 @@
 # Why Far Looks Up: Probing Spatial Representation in Vision-Language Models
 
+[![ECCV 2026](https://img.shields.io/badge/ECCV-2026-1f72b8.svg)](https://eccv.ecva.net/)
 [![arXiv](https://img.shields.io/badge/arXiv-2605.30161-b31b1b.svg)](https://arxiv.org/abs/2605.30161)
 [![Project Page](https://img.shields.io/badge/Project%20Page-online-blue.svg)](https://cheolhong0916.github.io/whyfarlooksup.github.io/)
 [![SpatialTunnel](https://img.shields.io/badge/SpatialTunnel-dataset-green.svg)](https://huggingface.co/datasets/cubec/spatialtunnel)
@@ -312,11 +313,18 @@ python probing.py --model_type my_vlm --scales base
 If you use this code or methodology, please cite our paper.
 
 ```bibtex
-@article{min2026whyfarlooksup,
-  title   = {Why Far Looks Up: Probing Spatial Representation in Vision-Language Models},
-  author  = {Min, Cheolhong and Jung, Jaeyun and Lee, Daeun and Jeon, Hyeonseong and
-             Su, Yu and Tremblay, Jonathan and Song, Chan Hee and Park, Jaesik},
-  journal = {arXiv preprint arXiv:2605.30161},
-  year    = {2026},
+@inproceedings{min2026whyfarlooksup,
+  title     = {Why Far Looks Up: Probing Spatial Representation in Vision-Language Models},
+  author    = {Min, Cheolhong and Jung, Jaeyun and Lee, Daeun and Jeon, Hyeonseong and
+               Su, Yu and Tremblay, Jonathan and Song, Chan Hee and Park, Jaesik},
+  booktitle = {Proceedings of the European Conference on Computer Vision (ECCV)},
+  year      = {2026},
 }
 ```
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE).
+
